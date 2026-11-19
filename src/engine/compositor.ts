@@ -13,6 +13,7 @@ import {
   evaluateKeyframes,
   getEffectiveSpeedAtTime,
 } from './timelineMath';
+import { getClipCanvasBox } from './previewGizmo';
 
 export class MediaElementCache {
   private images = new Map<string, HTMLImageElement>();
@@ -143,6 +144,7 @@ export interface RenderFrameOptions {
   computeHistogram?: boolean;
   selectedClipId?: string | null;
   showSelectionBox?: boolean;
+  snapGuides?: { x: boolean; y: boolean };
   onAssetLoad?: () => void;
 }
 
@@ -371,6 +373,7 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     computeHistogram,
     selectedClipId,
     showSelectionBox,
+    snapGuides,
     onAssetLoad,
   } = options;
 
@@ -678,31 +681,84 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     ctx.fillRect(0, height - barHeight, width, barHeight);
   }
 
-  // Selected clip on-canvas transform gizmo reticle (when paused & interactive)
+  // Selected clip on-canvas 2026 interactive transform gizmo (resize corners + rotate grip + snap guides)
   if (showSelectionBox && selectedClipId && !isPlaying) {
     const sel = activeClips.find((c) => c.id === selectedClipId);
     if (sel) {
+      if (snapGuides?.x) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(34, 211, 238, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(width / 2, 0);
+        ctx.lineTo(width / 2, height);
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (snapGuides?.y) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(34, 211, 238, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       const localT = clamp(playhead - sel.startTime, 0, sel.duration);
-      const tf = evaluateKeyframes(sel, localT);
-      const boxW = sel.kind === 'text' ? width * 0.48 * tf.scale : width * tf.scale * 0.94;
-      const boxH = sel.kind === 'text' ? height * 0.18 * tf.scale : height * tf.scale * 0.94;
+      const box = getClipCanvasBox(sel, localT, width, height);
+
       ctx.save();
-      ctx.translate(width / 2 + tf.x * width, height / 2 + tf.y * height);
-      ctx.rotate((tf.rotation * Math.PI) / 180);
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.85)';
+      // Bounding rectangle
+      ctx.translate(box.cx, box.cy);
+      ctx.rotate((box.rotationDeg * Math.PI) / 180);
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.9)';
       ctx.lineWidth = 2;
       ctx.setLineDash([7, 5]);
-      ctx.strokeRect(-boxW / 2, -boxH / 2, boxW, boxH);
+      ctx.strokeRect(-box.boxW / 2, -box.boxH / 2, box.boxW, box.boxH);
       ctx.setLineDash([]);
-      const r = 5;
-      ctx.fillStyle = '#fbbf24';
-      for (const [cx, cy] of [
-        [-boxW / 2, -boxH / 2],
-        [boxW / 2, -boxH / 2],
-        [-boxW / 2, boxH / 2],
-        [boxW / 2, boxH / 2],
-      ]) {
-        ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+      ctx.restore();
+
+      // Stem connecting top center to rotate grip
+      const topMidX = (box.corners[0].x + box.corners[1].x) / 2;
+      const topMidY = (box.corners[0].y + box.corners[1].y) / 2;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(topMidX, topMidY);
+      ctx.lineTo(box.rotateHandle.x, box.rotateHandle.y);
+      ctx.stroke();
+
+      // Rotation circular grip
+      ctx.fillStyle = '#090D16';
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(box.rotateHandle.x, box.rotateHandle.y, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(box.rotateHandle.x, box.rotateHandle.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 4 circular corner resize handles
+      for (const c of box.corners) {
+        ctx.fillStyle = '#090D16';
+        ctx.strokeStyle = '#fbbf24';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#fbbf24';
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 2.2, 0, Math.PI * 2);
+        ctx.fill();
       }
       ctx.restore();
     }

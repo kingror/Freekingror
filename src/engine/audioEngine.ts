@@ -4,6 +4,9 @@ import { clamp, computeAudioGainAtTime, evaluateAudioKeyframes } from './timelin
 interface AudioNodeGraph {
   element: HTMLAudioElement;
   source: MediaElementAudioSourceNode;
+  dehum: BiquadFilterNode;
+  mudCut: BiquadFilterNode;
+  voicePresence: BiquadFilterNode;
   bass: BiquadFilterNode;
   mid: BiquadFilterNode;
   treble: BiquadFilterNode;
@@ -11,11 +14,21 @@ interface AudioNodeGraph {
   gain: GainNode;
 }
 
+export interface LiveAudioLevelSnapshot {
+  rms: number;
+  peak: number;
+  peakDb: number;
+  clipping: boolean;
+}
+
 export class StudioAudioEngine {
   private ctx: AudioContext | null = null;
   private graphs = new Map<string, AudioNodeGraph>();
   private masterGain: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private timeDomainBuf: Float32Array<ArrayBuffer> | null = null;
+  private playingActive = false;
 
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -32,8 +45,15 @@ export class StudioAudioEngine {
       this.compressor.ratio.value = 10;
       this.compressor.attack.value = 0.003;
       this.compressor.release.value = 0.15;
+
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 1024;
+      this.analyser.smoothingTimeConstant = 0.72;
+      this.timeDomainBuf = new Float32Array(new ArrayBuffer(this.analyser.fftSize * 4));
+
       this.masterGain.connect(this.compressor);
-      this.compressor.connect(this.ctx.destination);
+      this.compressor.connect(this.analyser);
+      this.analyser.connect(this.ctx.destination);
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
@@ -53,6 +73,25 @@ export class StudioAudioEngine {
     element.src = src;
 
     const source = ctx.createMediaElementSource(element);
+
+    // 2026 Broadcast DSP Stage: High-pass De-Hum + Voice Mud Attenuation + Presence Boost
+    const dehum = ctx.createBiquadFilter();
+    dehum.type = 'highpass';
+    dehum.frequency.value = 20;
+    dehum.Q.value = 0.7;
+
+    const mudCut = ctx.createBiquadFilter();
+    mudCut.type = 'peaking';
+    mudCut.frequency.value = 300;
+    mudCut.Q.value = 1.2;
+    mudCut.gain.value = 0;
+
+    const voicePresence = ctx.createBiquadFilter();
+    voicePresence.type = 'peaking';
+    voicePresence.frequency.value = 2800;
+    voicePresence.Q.value = 1.1;
+    voicePresence.gain.value = 0;
+
     const bass = ctx.createBiquadFilter();
     bass.type = 'lowshelf';
     bass.frequency.value = 120;
@@ -69,7 +108,10 @@ export class StudioAudioEngine {
     const panner = typeof ctx.createStereoPanner === 'function' ? ctx.createStereoPanner() : null;
     const gain = ctx.createGain();
 
-    source.connect(bass);
+    source.connect(dehum);
+    dehum.connect(mudCut);
+    mudCut.connect(voicePresence);
+    voicePresence.connect(bass);
     bass.connect(mid);
     mid.connect(treble);
     if (panner) {
@@ -80,9 +122,42 @@ export class StudioAudioEngine {
     }
     gain.connect(this.masterGain);
 
-    const graph: AudioNodeGraph = { element, source, bass, mid, treble, panner, gain };
+    const graph: AudioNodeGraph = {
+      element,
+      source,
+      dehum,
+      mudCut,
+      voicePresence,
+      bass,
+      mid,
+      treble,
+      panner,
+      gain,
+    };
     this.graphs.set(clipId, graph);
     return graph;
+  }
+
+  getLiveAudioLevels(): LiveAudioLevelSnapshot {
+    if (!this.playingActive || !this.analyser || !this.timeDomainBuf) {
+      return { rms: 0, peak: 0, peakDb: -Infinity, clipping: false };
+    }
+    this.analyser.getFloatTimeDomainData(this.timeDomainBuf);
+    let sumSq = 0;
+    let peak = 0;
+    for (let i = 0; i < this.timeDomainBuf.length; i++) {
+      const v = Math.abs(this.timeDomainBuf[i]);
+      sumSq += v * v;
+      if (v > peak) peak = v;
+    }
+    const rms = Math.sqrt(sumSq / Math.max(1, this.timeDomainBuf.length));
+    const peakDb = peak > 1e-6 ? Number((20 * Math.log10(peak)).toFixed(1)) : -Infinity;
+    return {
+      rms: clamp(rms, 0, 1),
+      peak: clamp(peak, 0, 1.5),
+      peakDb,
+      clipping: peak >= 0.99,
+    };
   }
 
   syncPlayback(
@@ -93,6 +168,7 @@ export class StudioAudioEngine {
     assets: MediaAsset[],
     globalPlaybackRate = 1
   ): void {
+    this.playingActive = isPlaying;
     if (!isPlaying) {
       this.pauseAll();
       return;
@@ -101,6 +177,7 @@ export class StudioAudioEngine {
     const assetMap = new Map(assets.map((a) => [a.id, a]));
     const hasSoloAudio = tracks.some((t) => t.type === 'audio' && t.solo);
     const activeIds = new Set<string>();
+    let anyLimiterActive = false;
 
     for (const clip of clips) {
       if (clip.kind !== 'audio' && clip.kind !== 'video') continue;
@@ -115,6 +192,9 @@ export class StudioAudioEngine {
       if (!inWindow) continue;
 
       activeIds.add(clip.id);
+      if (clip.audio.compressorEnabled !== false) {
+        anyLimiterActive = true;
+      }
       const graph = this.getOrCreateGraph(clip.id, asset.src);
       if (!graph || !this.ctx) continue;
 
@@ -122,14 +202,27 @@ export class StudioAudioEngine {
       const targetSrcTime = clip.sourceOffset + localTime * clip.speed;
       const gainVal = computeAudioGainAtTime(clip, localTime);
       const { pan } = evaluateAudioKeyframes(clip, localTime);
+      const now = this.ctx.currentTime;
 
-      graph.gain.gain.setTargetAtTime(gainVal, this.ctx.currentTime, 0.02);
+      graph.gain.gain.setTargetAtTime(gainVal, now, 0.02);
       if (graph.panner) {
-        graph.panner.pan.setTargetAtTime(clamp(pan / 100, -1, 1), this.ctx.currentTime, 0.02);
+        graph.panner.pan.setTargetAtTime(clamp(pan / 100, -1, 1), now, 0.02);
       }
-      graph.bass.gain.setTargetAtTime(clip.audio.eqBass, this.ctx.currentTime, 0.03);
-      graph.mid.gain.setTargetAtTime(clip.audio.eqMid, this.ctx.currentTime, 0.03);
-      graph.treble.gain.setTargetAtTime(clip.audio.eqTreble, this.ctx.currentTime, 0.03);
+
+      const voiceIso = Boolean(clip.audio.voiceIsolation);
+      const hpHz =
+        clip.audio.highPassHz && clip.audio.highPassHz > 20
+          ? clip.audio.highPassHz
+          : voiceIso
+          ? 100
+          : 20;
+      graph.dehum.frequency.setTargetAtTime(hpHz, now, 0.03);
+      graph.mudCut.gain.setTargetAtTime(voiceIso ? -4.5 : 0, now, 0.03);
+      graph.voicePresence.gain.setTargetAtTime(voiceIso ? 4.5 : 0, now, 0.03);
+
+      graph.bass.gain.setTargetAtTime(clip.audio.eqBass, now, 0.03);
+      graph.mid.gain.setTargetAtTime(clip.audio.eqMid, now, 0.03);
+      graph.treble.gain.setTargetAtTime(clip.audio.eqTreble, now, 0.03);
 
       const effRate = clamp(clip.speed * globalPlaybackRate, 0.25, 4);
       if (Math.abs(graph.element.playbackRate - effRate) > 0.05) {
@@ -148,6 +241,10 @@ export class StudioAudioEngine {
       }
     }
 
+    if (this.compressor && this.ctx) {
+      this.compressor.ratio.setTargetAtTime(anyLimiterActive ? 10 : 1.0, this.ctx.currentTime, 0.03);
+    }
+
     for (const [id, graph] of this.graphs.entries()) {
       if (!activeIds.has(id) && !graph.element.paused) {
         graph.element.pause();
@@ -156,6 +253,7 @@ export class StudioAudioEngine {
   }
 
   pauseAll(): void {
+    this.playingActive = false;
     for (const graph of this.graphs.values()) {
       if (!graph.element.paused) {
         graph.element.pause();

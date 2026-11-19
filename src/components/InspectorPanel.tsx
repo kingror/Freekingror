@@ -557,6 +557,57 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               </button>
             </div>
 
+            <div className="grid grid-cols-4 gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateClip(clip.id, (p) => ({
+                    ...p,
+                    transform: { ...p.transform, x: 0, y: 0, scale: 1, rotation: 0 },
+                  }))
+                }
+                className="min-h-[28px] rounded-md border border-white/10 bg-[#141720] hover:bg-cyan-500/15 hover:border-cyan-400/40 text-[10px] font-medium text-zinc-200"
+              >
+                Fit 100%
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateClip(clip.id, (p) => ({
+                    ...p,
+                    transform: { ...p.transform, x: 0, y: 0, scale: 1.25 },
+                  }))
+                }
+                className="min-h-[28px] rounded-md border border-white/10 bg-[#141720] hover:bg-cyan-500/15 hover:border-cyan-400/40 text-[10px] font-medium text-zinc-200"
+              >
+                Fill Crop
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateClip(clip.id, (p) => ({
+                    ...p,
+                    transform: { ...p.transform, x: 0, y: 0 },
+                  }))
+                }
+                className="min-h-[28px] rounded-md border border-white/10 bg-[#141720] hover:bg-emerald-500/15 hover:border-emerald-400/40 text-[10px] font-medium text-zinc-200"
+              >
+                Center X/Y
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateClip(clip.id, (p) => ({
+                    ...p,
+                    transform: { ...p.transform, rotation: 0 },
+                  }))
+                }
+                className="min-h-[28px] rounded-md border border-white/10 bg-[#141720] hover:bg-amber-500/15 hover:border-amber-400/40 text-[10px] font-medium text-zinc-200"
+              >
+                Angle 0°
+              </button>
+            </div>
+
             <div className="space-y-3">
               <SliderRow
                 label="Scale"
@@ -1446,6 +1497,81 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 }
                 className="w-full studio-slider"
               />
+            </div>
+
+            {/* 2026 Broadcast & Voice Clarity DSP Stage */}
+            <div className="rounded-xl border border-white/10 bg-[#131720] p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-zinc-100">
+                  2026 Voice & Broadcast DSP
+                </span>
+                <span className="text-[10px] font-mono-tabular text-cyan-300">Web Audio Live</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(clip.audio.voiceIsolation)}
+                  onClick={() =>
+                    onUpdateClip(clip.id, (p) => ({
+                      ...p,
+                      audio: { ...p.audio, voiceIsolation: !p.audio.voiceIsolation },
+                    }))
+                  }
+                  className={`min-h-[34px] px-1.5 rounded-lg border text-[10px] font-semibold transition-colors ${
+                    clip.audio.voiceIsolation
+                      ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                      : 'border-white/10 bg-[#0B0D12] text-zinc-300 hover:bg-white/5'
+                  }`}
+                >
+                  Voice Clarity
+                </button>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={(clip.audio.highPassHz ?? 0) > 20}
+                  onClick={() =>
+                    onUpdateClip(clip.id, (p) => ({
+                      ...p,
+                      audio: {
+                        ...p.audio,
+                        highPassHz: (p.audio.highPassHz ?? 0) > 20 ? 0 : 85,
+                      },
+                    }))
+                  }
+                  className={`min-h-[34px] px-1.5 rounded-lg border text-[10px] font-semibold transition-colors ${
+                    (clip.audio.highPassHz ?? 0) > 20
+                      ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100'
+                      : 'border-white/10 bg-[#0B0D12] text-zinc-300 hover:bg-white/5'
+                  }`}
+                >
+                  De-Hum 85Hz
+                </button>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={clip.audio.compressorEnabled !== false}
+                  onClick={() =>
+                    onUpdateClip(clip.id, (p) => ({
+                      ...p,
+                      audio: {
+                        ...p.audio,
+                        compressorEnabled: p.audio.compressorEnabled === false,
+                      },
+                    }))
+                  }
+                  className={`min-h-[34px] px-1.5 rounded-lg border text-[10px] font-semibold transition-colors ${
+                    clip.audio.compressorEnabled !== false
+                      ? 'border-amber-400 bg-amber-500/20 text-amber-100'
+                      : 'border-white/10 bg-[#0B0D12] text-zinc-300 hover:bg-white/5'
+                  }`}
+                >
+                  Limiter
+                </button>
+              </div>
+              <p className="text-[10px] text-zinc-400 leading-snug">
+                Voice Clarity cuts 300Hz boxiness & boosts 2.8kHz articulation; De-Hum filters sub-85Hz rumble in both live playback and WAV/video export.
+              </p>
             </div>
 
             {/* LUFS Audio Normalization Tool */}

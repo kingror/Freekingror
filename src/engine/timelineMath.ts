@@ -67,6 +67,9 @@ export const DEFAULT_AUDIO_CONFIG: AudioConfig = {
   eqBass: 0,
   eqMid: 0,
   eqTreble: 0,
+  highPassHz: 0,
+  voiceIsolation: false,
+  compressorEnabled: true,
 };
 
 export function clamp(val: number, min: number, max: number): number {

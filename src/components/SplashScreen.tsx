@@ -121,14 +121,12 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ mediaCache, onComple
             />
           </div>
 
-          <div className="mt-2 flex items-center justify-between font-mono-tabular text-[11px] text-slate-400">
-            <span>1%</span>
+          <div className="mt-2 flex items-center justify-center font-mono-tabular text-[11px] text-slate-400">
             <span>
               {bytesInfo.total > 0
                 ? `${formatBytesRead(bytesInfo.read)} / ${formatBytesRead(bytesInfo.total)}`
                 : 'Reading device files'}
             </span>
-            <span>100%</span>
           </div>
         </div>
       </div>

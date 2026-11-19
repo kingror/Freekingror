@@ -1,22 +1,31 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Camera,
   ChevronLeft,
   ChevronRight,
+  Crosshair,
   Grid,
   Maximize2,
+  Minimize2,
   Pause,
   Pipette,
   Play,
   Repeat,
+  RotateCcw,
   Scissors,
   SkipBack,
 } from 'lucide-react';
 import type { AspectRatio, MediaAsset, TimelineClip, TimelineTrack } from '../types/editor';
 import { MediaElementCache, renderCompositeFrame } from '../engine/compositor';
 import { rgbToHex, type HistogramData } from '../engine/colorEngine';
-import { clamp, formatTimecode, getCanvasDimensions } from '../engine/timelineMath';
+import { clamp, evaluateKeyframes, formatTimecode, getCanvasDimensions } from '../engine/timelineMath';
+import {
+  computeGizmoDragUpdate,
+  getClipCanvasBox,
+  hitTestPreviewPoint,
+} from '../engine/previewGizmo';
+import type { LiveAudioLevelSnapshot } from '../engine/audioEngine';
 import { HistogramScope } from './HistogramScope';
 
 interface PreviewStageProps {
@@ -34,6 +43,7 @@ interface PreviewStageProps {
   eyedropperActive: boolean;
   showSafeMargins: boolean;
   showScopes: boolean;
+  getLiveAudioLevels?: () => LiveAudioLevelSnapshot;
   onTogglePlay: () => void;
   onChangePlaybackRate: (rate: number) => void;
   onToggleLoop: () => void;
@@ -41,10 +51,13 @@ interface PreviewStageProps {
   onToggleSafeMargins: () => void;
   onToggleScopes: () => void;
   onSplitAtPlayhead: () => void;
+  onSelectClip: (clipId: string) => void;
+  onOpenTextEditor?: (clipId: string) => void;
   onTransformSelectedClip: (
     clipId: string,
-    patch: { x?: number; y?: number; scale?: number }
+    patch: { x?: number; y?: number; scale?: number; rotation?: number }
   ) => void;
+  onCommitClipHistory?: (preDragClips: TimelineClip[]) => void;
   onPickChromaColor: (hex: string) => void;
   onCancelEyedropper: () => void;
 }
@@ -66,6 +79,7 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   eyedropperActive,
   showSafeMargins,
   showScopes,
+  getLiveAudioLevels,
   onTogglePlay,
   onChangePlaybackRate,
   onToggleLoop,
@@ -73,7 +87,10 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   onToggleSafeMargins,
   onToggleScopes,
   onSplitAtPlayhead,
+  onSelectClip,
+  onOpenTextEditor,
   onTransformSelectedClip,
+  onCommitClipHistory,
   onPickChromaColor,
   onCancelEyedropper,
 }) => {
@@ -81,21 +98,68 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [histogram, setHistogram] = useState<HistogramData | null>(null);
   const [renderTick, setRenderTick] = useState(0);
+  const [snapGuides, setSnapGuides] = useState<{ x: boolean; y: boolean }>({ x: false, y: false });
+  const [vuLevel, setVuLevel] = useState<LiveAudioLevelSnapshot>({
+    rms: 0,
+    peak: 0,
+    peakDb: -Infinity,
+    clipping: false,
+  });
+
   const [canvasDrag, setCanvasDrag] = useState<{
     clipId: string;
-    startX: number;
-    startY: number;
-    origX: number;
-    origY: number;
+    mode: 'move' | 'resize' | 'rotate';
+    startCanvasX: number;
+    startCanvasY: number;
+    origTransform: { x: number; y: number; scale: number; rotation: number };
+    origCenterX: number;
+    origCenterY: number;
+    preDragClips: TimelineClip[];
+    didMutate: boolean;
   } | null>(null);
 
   const dims = getCanvasDimensions(aspectRatio, 960);
+
+  // Ordered bottom-to-top compositing visual clips active at current playhead
+  const activeVisualClips = useMemo(() => {
+    const trackIndexMap = new Map(
+      tracks.map((t, idx) => [t.id, { track: t, order: tracks.length - idx }])
+    );
+    const hasSoloVisual = tracks.some((t) => t.type !== 'audio' && t.solo);
+    return clips
+      .filter((c) => {
+        const info = trackIndexMap.get(c.trackId);
+        if (!info || info.track.hidden || info.track.type === 'audio') return false;
+        if (hasSoloVisual && !info.track.solo) return false;
+        return playhead >= c.startTime && playhead <= c.startTime + c.duration;
+      })
+      .sort((a, b) => {
+        const oa = trackIndexMap.get(a.trackId)?.order ?? 0;
+        const ob = trackIndexMap.get(b.trackId)?.order ?? 0;
+        return oa - ob;
+      });
+  }, [clips, tracks, playhead]);
 
   const isSelectedVisualActive =
     Boolean(selectedClip) &&
     selectedClip!.kind !== 'audio' &&
     playhead >= selectedClip!.startTime &&
     playhead <= selectedClip!.startTime + selectedClip!.duration;
+
+  // Real Web Audio Analyser VU telemetry
+  useEffect(() => {
+    if (!isPlaying || !getLiveAudioLevels) {
+      setVuLevel({ rms: 0, peak: 0, peakDb: -Infinity, clipping: false });
+      return;
+    }
+    let raf = 0;
+    const poll = () => {
+      setVuLevel(getLiveAudioLevels());
+      raf = requestAnimationFrame(poll);
+    };
+    raf = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, getLiveAudioLevels]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -117,6 +181,7 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
       computeHistogram: showScopes,
       selectedClipId: selectedClip?.id ?? null,
       showSelectionBox: !isPlaying && !eyedropperActive && isSelectedVisualActive,
+      snapGuides,
       onAssetLoad: () => setRenderTick((n) => n + 1),
     });
 
@@ -135,10 +200,21 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
     selectedClip?.id,
     isSelectedVisualActive,
     eyedropperActive,
+    snapGuides,
     dims.width,
     dims.height,
     renderTick,
   ]);
+
+  const toCanvasCoords = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { px: 0, py: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return {
+      px: ((clientX - rect.left) / Math.max(1, rect.width)) * dims.width,
+      py: ((clientY - rect.top) / Math.max(1, rect.height)) * dims.height,
+    };
+  };
 
   const handleFullscreen = () => {
     const el = stageRef.current;
@@ -186,16 +262,16 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
+    const { px, py } = toCanvasCoords(e.clientX, e.clientY);
 
     if (eyedropperActive) {
-      const cx = clamp(Math.floor(((e.clientX - rect.left) / rect.width) * dims.width), 0, dims.width - 1);
-      const cy = clamp(Math.floor(((e.clientY - rect.top) / rect.height) * dims.height), 0, dims.height - 1);
+      const cx = clamp(Math.floor(px), 0, dims.width - 1);
+      const cy = clamp(Math.floor(py), 0, dims.height - 1);
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (ctx) {
         try {
-          const px = ctx.getImageData(cx, cy, 1, 1).data;
-          onPickChromaColor(rgbToHex(px[0], px[1], px[2]));
+          const sample = ctx.getImageData(cx, cy, 1, 1).data;
+          onPickChromaColor(rgbToHex(sample[0], sample[1], sample[2]));
         } catch {
           onCancelEyedropper();
         }
@@ -203,31 +279,102 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
       return;
     }
 
-    if (!isPlaying && selectedClip && isSelectedVisualActive) {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      setCanvasDrag({
-        clipId: selectedClip.id,
-        startX: e.clientX,
-        startY: e.clientY,
-        origX: selectedClip.transform.x,
-        origY: selectedClip.transform.y,
-      });
+    if (isPlaying) return;
+
+    const hit = hitTestPreviewPoint({
+      px,
+      py,
+      width: dims.width,
+      height: dims.height,
+      playhead,
+      activeClipsBottomToTop: activeVisualClips,
+      selectedClipId: selectedClip?.id ?? null,
+      handleRadius: 24,
+    });
+
+    const targetClip = hit
+      ? clips.find((c) => c.id === hit.clipId) ?? selectedClip
+      : selectedClip && isSelectedVisualActive
+      ? selectedClip
+      : null;
+
+    if (!targetClip) return;
+
+    if (targetClip.id !== selectedClip?.id) {
+      onSelectClip(targetClip.id);
     }
+
+    const mode: 'move' | 'resize' | 'rotate' = hit ? hit.type : 'move';
+    const localT = clamp(playhead - targetClip.startTime, 0, targetClip.duration);
+    const box = getClipCanvasBox(targetClip, localT, dims.width, dims.height);
+    const tf = evaluateKeyframes(targetClip, localT);
+
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setCanvasDrag({
+      clipId: targetClip.id,
+      mode,
+      startCanvasX: px,
+      startCanvasY: py,
+      origTransform: {
+        x: tf.x,
+        y: tf.y,
+        scale: tf.scale,
+        rotation: tf.rotation,
+      },
+      origCenterX: box.cx,
+      origCenterY: box.cy,
+      preDragClips: clips,
+      didMutate: false,
+    });
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!canvasDrag || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const dx = (e.clientX - canvasDrag.startX) / Math.max(100, rect.width);
-    const dy = (e.clientY - canvasDrag.startY) / Math.max(100, rect.height);
-    onTransformSelectedClip(canvasDrag.clipId, {
-      x: Number(clamp(canvasDrag.origX + dx, -1, 1).toFixed(3)),
-      y: Number(clamp(canvasDrag.origY + dy, -1, 1).toFixed(3)),
+    const { px, py } = toCanvasCoords(e.clientX, e.clientY);
+    const update = computeGizmoDragUpdate({
+      mode: canvasDrag.mode,
+      origTransform: canvasDrag.origTransform,
+      origCenterX: canvasDrag.origCenterX,
+      origCenterY: canvasDrag.origCenterY,
+      startCanvasX: canvasDrag.startCanvasX,
+      startCanvasY: canvasDrag.startCanvasY,
+      currCanvasX: px,
+      currCanvasY: py,
+      width: dims.width,
+      height: dims.height,
+      snapToCenter: true,
     });
+    setSnapGuides({ x: update.snapX, y: update.snapY });
+    setCanvasDrag((prev) => (prev ? { ...prev, didMutate: true } : null));
+    onTransformSelectedClip(canvasDrag.clipId, update.patch);
   };
 
   const handleCanvasPointerUp = () => {
+    if (canvasDrag?.didMutate && onCommitClipHistory) {
+      onCommitClipHistory(canvasDrag.preDragClips);
+    }
     setCanvasDrag(null);
+    setSnapGuides({ x: false, y: false });
+  };
+
+  const handleCanvasDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isPlaying || eyedropperActive) return;
+    const { px, py } = toCanvasCoords(e.clientX, e.clientY);
+    const hit = hitTestPreviewPoint({
+      px,
+      py,
+      width: dims.width,
+      height: dims.height,
+      playhead,
+      activeClipsBottomToTop: activeVisualClips,
+      selectedClipId: selectedClip?.id ?? null,
+    });
+    if (!hit) return;
+    const target = clips.find((c) => c.id === hit.clipId);
+    if (target?.kind === 'text' && onOpenTextEditor) {
+      onSelectClip(target.id);
+      onOpenTextEditor(target.id);
+    }
   };
 
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -244,6 +391,8 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
     const next = SHUTTLE_RATES[(idx + 1) % SHUTTLE_RATES.length];
     onChangePlaybackRate(next);
   };
+
+  const vuPct = Math.min(100, Math.round(vuLevel.peak * 100));
 
   return (
     <section
@@ -267,11 +416,12 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
             onPointerDown={handleCanvasPointerDown}
             onPointerMove={handleCanvasPointerMove}
             onPointerUp={handleCanvasPointerUp}
+            onDoubleClick={handleCanvasDoubleClick}
             onWheel={handleCanvasWheel}
             className={`w-full h-full object-contain block touch-none ${
               eyedropperActive
                 ? 'cursor-crosshair'
-                : !isPlaying && isSelectedVisualActive
+                : !isPlaying && activeVisualClips.length > 0
                 ? 'cursor-move'
                 : ''
             }`}
@@ -299,20 +449,95 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
         </div>
       </div>
 
+      {/* Compact 2026 Quick Transform & Gizmo Bar (cleanly below video frame so it never covers subtitles) */}
+      {!isPlaying && !eyedropperActive && selectedClip && isSelectedVisualActive && (
+        <div
+          data-testid="preview-quick-transform"
+          className="shrink-0 border-t border-white/5 bg-[#0A0C11] px-2.5 py-1 flex items-center justify-center gap-1.5 text-[10px] font-mono-tabular text-zinc-200 overflow-x-auto no-scrollbar"
+        >
+          <span
+            data-testid="preview-transform-telemetry"
+            className="text-amber-300 font-semibold whitespace-nowrap pr-2 border-r border-white/10"
+          >
+            {Math.round(selectedClip.transform.scale * 100)}% · X
+            {Math.round(selectedClip.transform.x * 100)} Y
+            {Math.round(selectedClip.transform.y * 100)} · {selectedClip.transform.rotation}°
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              onTransformSelectedClip(selectedClip.id, { x: 0, y: 0, scale: 1, rotation: 0 })
+            }
+            title="Fit 100% Center"
+            className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-200 flex items-center gap-1 whitespace-nowrap"
+          >
+            <Maximize2 className="w-2.5 h-2.5 text-cyan-300" /> Fit
+          </button>
+          <button
+            type="button"
+            onClick={() => onTransformSelectedClip(selectedClip.id, { scale: 0.5 })}
+            title="50% PiP Size"
+            className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-200 flex items-center gap-1 whitespace-nowrap"
+          >
+            <Minimize2 className="w-2.5 h-2.5 text-violet-300" /> 50%
+          </button>
+          <button
+            type="button"
+            onClick={() => onTransformSelectedClip(selectedClip.id, { x: 0, y: 0 })}
+            title="Snap to Center"
+            className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-200 flex items-center gap-1 whitespace-nowrap"
+          >
+            <Crosshair className="w-2.5 h-2.5 text-emerald-300" /> Center
+          </button>
+          <button
+            type="button"
+            onClick={() => onTransformSelectedClip(selectedClip.id, { rotation: 0 })}
+            title="Reset Rotation"
+            className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-200 flex items-center gap-1 whitespace-nowrap"
+          >
+            <RotateCcw className="w-2.5 h-2.5 text-amber-300" /> 0°
+          </button>
+        </div>
+      )}
+
       {/* Transport & Timecode Bar */}
       <div className="shrink-0 border-t border-white/10 bg-[#0D0F14] px-2.5 sm:px-3 py-1.5 flex items-center justify-between gap-1.5 overflow-x-auto no-scrollbar">
-        {/* Timecode readout */}
-        <div className="flex items-center gap-1.5 text-xs font-mono-tabular shrink-0">
-          <span
-            data-testid="smpte-playhead"
-            className="text-amber-400 font-semibold tracking-tight whitespace-nowrap"
+        {/* Timecode readout + real live VU meter */}
+        <div className="flex items-center gap-2 text-xs font-mono-tabular shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span
+              data-testid="smpte-playhead"
+              className="text-amber-400 font-semibold tracking-tight whitespace-nowrap"
+            >
+              {formatTimecode(playhead, 30)}
+            </span>
+            <span className="text-zinc-600 hidden sm:inline">/</span>
+            <span className="text-zinc-400 hidden sm:inline whitespace-nowrap">
+              {formatTimecode(totalDuration, 30)}
+            </span>
+          </div>
+
+          <div
+            data-testid="master-audio-vu"
+            title="Live Master Audio Peak Meter"
+            className="hidden md:flex items-center gap-1.5 pl-2 border-l border-white/10"
           >
-            {formatTimecode(playhead, 30)}
-          </span>
-          <span className="text-zinc-600 hidden sm:inline">/</span>
-          <span className="text-zinc-400 hidden sm:inline whitespace-nowrap">
-            {formatTimecode(totalDuration, 30)}
-          </span>
+            <div className="w-14 h-2 rounded-full bg-zinc-800 overflow-hidden">
+              <div
+                style={{ width: `${vuPct}%` }}
+                className={`h-full transition-[width] duration-75 ${
+                  vuLevel.clipping
+                    ? 'bg-rose-500'
+                    : vuPct > 75
+                    ? 'bg-amber-400'
+                    : 'bg-emerald-400'
+                }`}
+              />
+            </div>
+            <span className="text-[10px] text-zinc-400 w-9">
+              {Number.isFinite(vuLevel.peakDb) ? `${vuLevel.peakDb}dB` : '-∞'}
+            </span>
+          </div>
         </div>
 
         {/* Center Transport Controls */}

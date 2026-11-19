@@ -16,6 +16,35 @@ export interface ExportResult {
   sizeBytes: number;
 }
 
+export interface RealExportCapabilities {
+  webCodecsVideoEncoder: boolean;
+  offlineAudioMixdown: boolean;
+  mp4Supported: boolean;
+  webmVp9Supported: boolean;
+  activeCodecLabel: string;
+}
+
+export function getRealExportCapabilities(format: ExportSettings['format']): RealExportCapabilities {
+  const webCodecsVideoEncoder = typeof VideoEncoder !== 'undefined';
+  const offlineAudioMixdown =
+    typeof window !== 'undefined' && typeof OfflineAudioContext !== 'undefined';
+  const hasRecorder = typeof MediaRecorder !== 'undefined';
+  const mp4Supported =
+    hasRecorder &&
+    (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1.42E01E,mp4a.40.2') ||
+      MediaRecorder.isTypeSupported('video/mp4'));
+  const webmVp9Supported =
+    hasRecorder && MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus');
+  const picked = pickSupportedMimeType(format);
+  return {
+    webCodecsVideoEncoder,
+    offlineAudioMixdown,
+    mp4Supported,
+    webmVp9Supported,
+    activeCodecLabel: format === 'wav' ? 'PCM 16-bit WAV (44.1kHz Stereo)' : picked.mimeType,
+  };
+}
+
 export function pickSupportedMimeType(format: ExportSettings['format']): {
   mimeType: string;
   ext: string;
@@ -175,6 +204,31 @@ async function renderMixedAudioBuffer(
     srcNode.buffer = decoded;
     srcNode.playbackRate.value = clamp(clip.speed, 0.25, 4);
 
+    const voiceIso = Boolean(clip.audio.voiceIsolation);
+    const hpHz =
+      clip.audio.highPassHz && clip.audio.highPassHz > 20
+        ? clip.audio.highPassHz
+        : voiceIso
+        ? 100
+        : 20;
+
+    const dehum = offline.createBiquadFilter();
+    dehum.type = 'highpass';
+    dehum.frequency.value = hpHz;
+    dehum.Q.value = 0.7;
+
+    const mudCut = offline.createBiquadFilter();
+    mudCut.type = 'peaking';
+    mudCut.frequency.value = 300;
+    mudCut.Q.value = 1.2;
+    mudCut.gain.value = voiceIso ? -4.5 : 0;
+
+    const voicePresence = offline.createBiquadFilter();
+    voicePresence.type = 'peaking';
+    voicePresence.frequency.value = 2800;
+    voicePresence.Q.value = 1.1;
+    voicePresence.gain.value = voiceIso ? 4.5 : 0;
+
     const bass = offline.createBiquadFilter();
     bass.type = 'lowshelf';
     bass.frequency.value = 120;
@@ -211,7 +265,10 @@ async function renderMixedAudioBuffer(
       }
     }
 
-    srcNode.connect(bass);
+    srcNode.connect(dehum);
+    dehum.connect(mudCut);
+    mudCut.connect(voicePresence);
+    voicePresence.connect(bass);
     bass.connect(mid);
     mid.connect(treble);
     treble.connect(panner);

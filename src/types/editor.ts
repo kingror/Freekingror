@@ -132,6 +132,9 @@ export interface AudioConfig {
   eqBass: number; // -12 to +12 dB
   eqMid: number; // -12 to +12 dB
   eqTreble: number; // -12 to +12 dB
+  highPassHz?: number; // 0 (off) or 80..120 Hz rumble/hum cut
+  voiceIsolation?: boolean; // vocal presence & mud attenuation DSP
+  compressorEnabled?: boolean; // broadcast soft limiter
   measuredLufs?: number; // integrated loudness before normalization
   targetLufs?: number; // normalized target LUFS (e.g. -14, -16, -23)
   peakDb?: number; // true peak in dBFS

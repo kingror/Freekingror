@@ -73,6 +73,7 @@ import { ExportModal } from './components/ExportModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SplashScreen } from './components/SplashScreen';
 import { HomeScreen } from './components/HomeScreen';
+import { AddMediaModal } from './components/AddMediaModal';
 import { shouldSkipSplashFromSearch } from './engine/splashProgress';
 import {
   computeProjectProgress,
@@ -159,6 +160,10 @@ export default function App() {
 
   const [formatsModalOpen, setFormatsModalOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [addMediaModal, setAddMediaModal] = useState<{ open: boolean; mode: 'video' | 'audio' }>({
+    open: false,
+    mode: 'video',
+  });
   const [savedGallery, setSavedGallery] = useState<SavedGalleryItem[]>([]);
 
   const cacheRef = useRef<MediaElementCache | null>(null);
@@ -415,40 +420,49 @@ export default function App() {
     [clips, selectedClipId, commitMutation]
   );
 
-  const handleAddTrack = useCallback(
-    (kind: 'video' | 'audio') => {
+  const createTrackInsertSpec = useCallback(
+    (kind: 'video' | 'audio', baseTracks: TimelineTrack[]): { newTrack: TimelineTrack; nextTracks: TimelineTrack[] } => {
       if (kind === 'video') {
-        const videoCount = tracks.filter((t) => t.type === 'video' || t.type === 'overlay').length;
+        const videoCount = baseTracks.filter(
+          (t) => t.type === 'video' || t.type === 'overlay'
+        ).length;
         const nextNum = videoCount + 1;
         const newTrack: TimelineTrack = {
           id: `track_v${nextNum}_${Date.now().toString(36).slice(-3)}`,
           type: 'overlay',
           role: 'overlay',
-          label: `V${nextNum} Overlay`,
+          label: `V${nextNum} Sub-Vid`,
           muted: false,
           locked: false,
           hidden: false,
         };
-        const titleIdx = tracks.findIndex((t) => t.type === 'text');
-        const nextTracks = [...tracks];
+        const titleIdx = baseTracks.findIndex((t) => t.type === 'text');
+        const nextTracks = [...baseTracks];
         nextTracks.splice(titleIdx >= 0 ? titleIdx + 1 : 0, 0, newTrack);
-        commitMutation(clips, nextTracks);
-      } else {
-        const audioCount = tracks.filter((t) => t.type === 'audio').length;
-        const nextNum = audioCount + 1;
-        const newTrack: TimelineTrack = {
-          id: `track_a${nextNum}_${Date.now().toString(36).slice(-3)}`,
-          type: 'audio',
-          role: nextNum === 3 ? 'voiceover' : 'music',
-          label: `A${nextNum} ${nextNum === 3 ? 'Voiceover' : 'Audio'}`,
-          muted: false,
-          locked: false,
-          hidden: false,
-        };
-        commitMutation(clips, [...tracks, newTrack]);
+        return { newTrack, nextTracks };
       }
+      const audioCount = baseTracks.filter((t) => t.type === 'audio').length;
+      const nextNum = audioCount + 1;
+      const newTrack: TimelineTrack = {
+        id: `track_a${nextNum}_${Date.now().toString(36).slice(-3)}`,
+        type: 'audio',
+        role: nextNum === 3 ? 'voiceover' : 'music',
+        label: `A${nextNum} ${nextNum === 3 ? 'Voiceover' : 'Audio'}`,
+        muted: false,
+        locked: false,
+        hidden: false,
+      };
+      return { newTrack, nextTracks: [...baseTracks, newTrack] };
     },
-    [clips, tracks, commitMutation]
+    []
+  );
+
+  const handleAddTrack = useCallback(
+    (kind: 'video' | 'audio') => {
+      const { nextTracks } = createTrackInsertSpec(kind, tracks);
+      commitMutation(clips, nextTracks);
+    },
+    [clips, tracks, createTrackInsertSpec, commitMutation]
   );
 
   const handleAddKeyframe = useCallback(
@@ -562,21 +576,24 @@ export default function App() {
       asset: MediaAsset,
       trackId: string,
       placement: InsertPlacement = 'back',
-      explicitTime?: number
+      explicitTime?: number,
+      overrideTracks?: TimelineTrack[]
     ) => {
-      const requestedTrack = tracks.find((t) => t.id === trackId);
+      const activeTracks = overrideTracks ?? tracks;
+      const requestedTrack = activeTracks.find((t) => t.id === trackId);
       const dummyClipForTrackCheck = { kind: asset.kind } as TimelineClip;
       const targetTrack =
         requestedTrack && isClipCompatibleWithTrack(dummyClipForTrackCheck, requestedTrack)
           ? requestedTrack
-          : tracks.find((t) => isClipCompatibleWithTrack(dummyClipForTrackCheck, t)) ?? tracks[0];
+          : activeTracks.find((t) => isClipCompatibleWithTrack(dummyClipForTrackCheck, t)) ??
+            activeTracks[0];
 
       const resolvedTrackId = targetTrack?.id ?? trackId;
       const isOverlay = targetTrack?.type === 'overlay';
       const defaultStart =
         explicitTime !== undefined
           ? explicitTime
-          : isOverlay || asset.audioSubType === 'sfx' || asset.audioSubType === 'voiceover'
+          : placement === 'time' || isOverlay || asset.audioSubType === 'sfx' || asset.audioSubType === 'voiceover'
           ? playhead
           : 0;
 
@@ -622,7 +639,7 @@ export default function App() {
         );
       }
 
-      commitMutation(nextClips);
+      commitMutation(nextClips, activeTracks);
       setSelectedClipId(newClip.id);
       setMobileSheet('none');
     },
@@ -637,6 +654,20 @@ export default function App() {
     },
     [assets, handleAddAssetToTimeline]
   );
+
+  const decodeRealAssetWaveform = useCallback((assetId: string, url: string) => {
+    analyzeMediaAudioLoudness(url)
+      .then((metrics) => {
+        if (metrics.waveform?.length) {
+          setAssets((prev) =>
+            prev.map((a) => (a.id === assetId ? { ...a, waveform: metrics.waveform } : a))
+          );
+        }
+      })
+      .catch(() => {
+        // Ignore silent video containers or decode failures
+      });
+  }, []);
 
   const normalizeAudioClips = useCallback(
     async (
@@ -737,8 +768,9 @@ export default function App() {
   const handleVoiceoverRecorded = useCallback(
     (blob: Blob, durationSec: number) => {
       const url = URL.createObjectURL(blob);
+      const assetId = `asset_vo_${Date.now().toString(36)}`;
       const voAsset: MediaAsset = {
-        id: `asset_vo_${Date.now().toString(36)}`,
+        id: assetId,
         name: `Voiceover_${new Date().toLocaleTimeString().replace(/[: ]/g, '')}.webm`,
         src: url,
         kind: 'audio',
@@ -751,18 +783,26 @@ export default function App() {
         formatInfo: inspectMediaFileSpec('voiceover.webm', blob.type || 'audio/webm'),
       };
       setAssets((prev) => [voAsset, ...prev]);
+      decodeRealAssetWaveform(assetId, url);
       const targetAudio =
         tracks.find((t) => t.role === 'voiceover')?.id ??
         tracks.find((t) => t.type === 'audio')?.id ??
         'track_a1';
       handleAddAssetToTimeline(voAsset, targetAudio, 'time');
     },
-    [tracks, handleAddAssetToTimeline]
+    [tracks, handleAddAssetToTimeline, decodeRealAssetWaveform]
   );
 
   const handleImportFiles = useCallback(
-    async (fileList: FileList | File[], preferredTrackId?: string, preferredStartTime?: number) => {
+    async (
+      fileList: FileList | File[],
+      preferredTrackId?: string,
+      preferredStartTime?: number,
+      preferredPlacement?: InsertPlacement,
+      overrideTracks?: TimelineTrack[]
+    ) => {
       const files = Array.from(fileList);
+      const activeTracks = overrideTracks ?? tracks;
       for (const file of files) {
         const headerSlice = file.slice(0, 32);
         const buf = await headerSlice.arrayBuffer();
@@ -816,8 +856,9 @@ export default function App() {
           });
         }
 
+        const assetId = `asset_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
         const newAsset: MediaAsset = {
-          id: `asset_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+          id: assetId,
           name: file.name,
           src: objectUrl,
           kind: formatInfo.category,
@@ -830,20 +871,26 @@ export default function App() {
         };
 
         setAssets((prev) => [newAsset, ...prev]);
+        if (formatInfo.category === 'audio' || formatInfo.category === 'video') {
+          decodeRealAssetWaveform(assetId, objectUrl);
+        }
         const targetTrack =
           preferredTrackId ??
           (formatInfo.category === 'audio'
-            ? tracks.find((t) => t.type === 'audio')?.id ?? 'track_a1'
-            : tracks.find((t) => t.type === 'video')?.id ?? 'track_v1');
+            ? activeTracks.find((t) => t.type === 'audio')?.id ?? 'track_a1'
+            : activeTracks.find((t) => t.type === 'video')?.id ?? 'track_v1');
+        const resolvedPlacement: InsertPlacement =
+          preferredPlacement ?? (preferredStartTime !== undefined ? 'time' : 'back');
         handleAddAssetToTimeline(
           newAsset,
           targetTrack,
-          preferredStartTime !== undefined ? 'time' : 'back',
-          preferredStartTime
+          resolvedPlacement,
+          preferredStartTime,
+          activeTracks
         );
       }
     },
-    [tracks, handleAddAssetToTimeline]
+    [tracks, handleAddAssetToTimeline, decodeRealAssetWaveform]
   );
 
   const handleAddTextClip = useCallback(
@@ -1020,7 +1067,7 @@ export default function App() {
   );
 
   const handleTransformSelectedClip = useCallback(
-    (clipId: string, patch: { x?: number; y?: number; scale?: number }) => {
+    (clipId: string, patch: { x?: number; y?: number; scale?: number; rotation?: number }) => {
       setClips((prev) =>
         prev.map((c) =>
           c.id === clipId
@@ -1031,6 +1078,7 @@ export default function App() {
                   ...(patch.x !== undefined ? { x: patch.x } : {}),
                   ...(patch.y !== undefined ? { y: patch.y } : {}),
                   ...(patch.scale !== undefined ? { scale: patch.scale } : {}),
+                  ...(patch.rotation !== undefined ? { rotation: patch.rotation } : {}),
                 },
               }
             : c
@@ -1038,6 +1086,14 @@ export default function App() {
       );
     },
     []
+  );
+
+  const handleCommitClipHistory = useCallback(
+    (preDragClips: TimelineClip[]) => {
+      setHistoryPast((prev) => [...prev.slice(-29), { clips: preDragClips, tracks }]);
+      setHistoryFuture([]);
+    },
+    [tracks]
   );
 
   const handlePickChromaColor = useCallback(
@@ -1317,6 +1373,7 @@ export default function App() {
           eyedropperActive={eyedropperActive}
           showSafeMargins={showSafeMargins}
           showScopes={showScopes}
+          getLiveAudioLevels={() => audioRef.current!.getLiveAudioLevels()}
           onTogglePlay={() => setIsPlaying((p) => !p)}
           onChangePlaybackRate={setPlaybackRate}
           onToggleLoop={() => setLoopEnabled((v) => !v)}
@@ -1324,7 +1381,19 @@ export default function App() {
           onToggleSafeMargins={() => setShowSafeMargins((v) => !v)}
           onToggleScopes={() => setShowScopes((v) => !v)}
           onSplitAtPlayhead={handleSplitAtPlayhead}
+          onSelectClip={(id) => {
+            setSelectedClipId(id);
+            setNormalizeStatusMessage(null);
+          }}
+          onOpenTextEditor={(id) => {
+            setSelectedClipId(id);
+            setInspectorTab('text');
+            if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+              setMobileSheet('inspector');
+            }
+          }}
           onTransformSelectedClip={handleTransformSelectedClip}
+          onCommitClipHistory={handleCommitClipHistory}
           onPickChromaColor={handlePickChromaColor}
           onCancelEyedropper={() => setEyedropperActive(false)}
         />
@@ -1353,13 +1422,14 @@ export default function App() {
         onToggleSnap={() => setSnapEnabled((s) => !s)}
         onToggleRipple={() => setRippleEnabled((r) => !r)}
         onToggleTrackFlag={handleToggleTrackFlag}
-        onAddTrack={handleAddTrack}
+        onOpenAddMedia={(mode) => setAddMediaModal({ open: true, mode })}
         onDeleteTrack={handleDeleteTrack}
         onAddMarker={handleAddMarker}
         onRemoveMarker={handleRemoveMarker}
         onCompactGaps={handleCompactGaps}
         onMoveClip={handleMoveClip}
         onTrimClip={handleTrimClip}
+        onCommitDragHistory={handleCommitClipHistory}
         onNudgeClip={handleNudgeClip}
         onSplitClip={handleSplitAtPlayhead}
         onDuplicateClip={handleDuplicateClip}
@@ -1492,6 +1562,31 @@ export default function App() {
         </div>
       )}
 
+      <AddMediaModal
+        open={addMediaModal.open}
+        mode={addMediaModal.mode}
+        assets={assets}
+        tracks={tracks}
+        playhead={playhead}
+        onClose={() => setAddMediaModal((prev) => ({ ...prev, open: false }))}
+        onImportToTarget={({ files, destinationTrackId, placement, kind }) => {
+          if (destinationTrackId === 'new') {
+            const { newTrack, nextTracks } = createTrackInsertSpec(kind, tracks);
+            handleImportFiles(files, newTrack.id, undefined, placement, nextTracks);
+          } else {
+            handleImportFiles(files, destinationTrackId, undefined, placement);
+          }
+        }}
+        onAddExistingToTarget={({ asset, destinationTrackId, placement, kind }) => {
+          if (destinationTrackId === 'new') {
+            const { newTrack, nextTracks } = createTrackInsertSpec(kind, tracks);
+            handleAddAssetToTimeline(asset, newTrack.id, placement, undefined, nextTracks);
+          } else {
+            handleAddAssetToTimeline(asset, destinationTrackId, placement);
+          }
+        }}
+        onCreateEmptyTrackOnly={(kind) => handleAddTrack(kind)}
+      />
       <FormatsModal open={formatsModalOpen} onClose={() => setFormatsModalOpen(false)} />
       <ExportModal
         open={exportModalOpen}

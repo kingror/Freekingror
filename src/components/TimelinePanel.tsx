@@ -51,13 +51,14 @@ interface TimelinePanelProps {
   onToggleSnap: () => void;
   onToggleRipple: () => void;
   onToggleTrackFlag: (trackId: string, flag: 'muted' | 'locked' | 'hidden' | 'solo') => void;
-  onAddTrack: (kind: 'video' | 'audio') => void;
+  onOpenAddMedia: (kind: 'video' | 'audio') => void;
   onDeleteTrack: (trackId: string) => void;
   onAddMarker: () => void;
   onRemoveMarker: (markerId: string) => void;
   onCompactGaps: () => void;
   onMoveClip: (clipId: string, newStartTime: number, targetTrackId?: string) => void;
   onTrimClip: (clipId: string, newStartTime: number, newDuration: number, newSourceOffset: number) => void;
+  onCommitDragHistory?: (preDragClips: TimelineClip[]) => void;
   onNudgeClip: (deltaFrames: number) => void;
   onSplitClip: () => void;
   onDuplicateClip: () => void;
@@ -103,13 +104,14 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onToggleSnap,
   onToggleRipple,
   onToggleTrackFlag,
-  onAddTrack,
+  onOpenAddMedia,
   onDeleteTrack,
   onAddMarker,
   onRemoveMarker,
   onCompactGaps,
   onMoveClip,
   onTrimClip,
+  onCommitDragHistory,
   onNudgeClip,
   onSplitClip,
   onDuplicateClip,
@@ -130,6 +132,11 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     origTrackIndex: number;
     liveStart: number;
     liveDuration: number;
+    liveTrackId: string;
+    hoverTrackId: string | null;
+    hoverTrackCompatible: boolean;
+    preDragClips: TimelineClip[];
+    didMutate: boolean;
   } | null>(null);
   const [snapGuideTime, setSnapGuideTime] = useState<number | null>(null);
   const [dropPreview, setDropPreview] = useState<{
@@ -191,7 +198,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       origTrackIndex: Math.max(0, trIdx),
       liveStart: clip.startTime,
       liveDuration: clip.duration,
+      liveTrackId: clip.trackId,
+      hoverTrackId: clip.trackId,
+      hoverTrackCompatible: true,
+      preDragClips: clips,
+      didMutate: false,
     });
+  };
+
+  const resolveHoveredTrackFromY = (clientY: number): TimelineTrack | undefined => {
+    const laneEls = document.querySelectorAll<HTMLElement>('[data-track-row-id]');
+    for (const el of laneEls) {
+      const rect = el.getBoundingClientRect();
+      if (clientY >= rect.top && clientY <= rect.bottom) {
+        const id = el.dataset.trackRowId;
+        const found = tracks.find((t) => t.id === id);
+        if (found) return found;
+      }
+    }
+    return undefined;
   };
 
   const moveClipDrag = (e: React.PointerEvent) => {
@@ -220,17 +245,37 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       }
 
       let nextTrackId: string | undefined;
+      let hoverTrackId: string | null = dragState.liveTrackId;
+      let hoverTrackCompatible = true;
       if (clipObj) {
+        const domHovered = resolveHoveredTrackFromY(e.clientY);
         const laneDelta = Math.round((e.clientY - dragState.startClientY) / trackRowHeight);
-        const candIdx = Math.max(0, Math.min(tracks.length - 1, dragState.origTrackIndex + laneDelta));
-        const candTrack = tracks[candIdx];
-        if (candTrack && !candTrack.locked && isClipCompatibleWithTrack(clipObj, candTrack)) {
-          nextTrackId = candTrack.id;
+        const fallbackTrack =
+          tracks[Math.max(0, Math.min(tracks.length - 1, dragState.origTrackIndex + laneDelta))];
+        const candTrack = domHovered ?? fallbackTrack;
+        if (candTrack) {
+          hoverTrackId = candTrack.id;
+          const compatible = !candTrack.locked && isClipCompatibleWithTrack(clipObj, candTrack);
+          hoverTrackCompatible = compatible;
+          if (compatible) {
+            nextTrackId = candTrack.id;
+          }
         }
       }
 
       setSnapGuideTime(guide);
-      setDragState((prev) => (prev ? { ...prev, liveStart: nextStart } : null));
+      setDragState((prev) =>
+        prev
+          ? {
+              ...prev,
+              liveStart: nextStart,
+              liveTrackId: nextTrackId ?? prev.liveTrackId,
+              hoverTrackId,
+              hoverTrackCompatible,
+              didMutate: true,
+            }
+          : null
+      );
       onMoveClip(dragState.clipId, Number(nextStart.toFixed(3)), nextTrackId);
     } else if (dragState.mode === 'trimLeft') {
       let effectiveDelta = deltaSec;
@@ -261,7 +306,9 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       );
       setSnapGuideTime(guide);
       setDragState((prev) =>
-        prev ? { ...prev, liveStart: trimmed.startTime, liveDuration: trimmed.duration } : null
+        prev
+          ? { ...prev, liveStart: trimmed.startTime, liveDuration: trimmed.duration, didMutate: true }
+          : null
       );
       onTrimClip(dragState.clipId, trimmed.startTime, trimmed.duration, trimmed.sourceOffset);
     } else if (dragState.mode === 'trimRight') {
@@ -293,13 +340,18 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       );
       setSnapGuideTime(guide);
       setDragState((prev) =>
-        prev ? { ...prev, liveStart: trimmed.startTime, liveDuration: trimmed.duration } : null
+        prev
+          ? { ...prev, liveStart: trimmed.startTime, liveDuration: trimmed.duration, didMutate: true }
+          : null
       );
       onTrimClip(dragState.clipId, trimmed.startTime, trimmed.duration, trimmed.sourceOffset);
     }
   };
 
   const endClipDrag = () => {
+    if (dragState?.didMutate && onCommitDragHistory) {
+      onCommitDragHistory(dragState.preDragClips);
+    }
     setDragState(null);
     setSnapGuideTime(null);
   };
@@ -468,16 +520,18 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
           <button
             type="button"
-            onClick={() => onAddTrack('video')}
-            aria-label="Add Video Layer Track"
+            onClick={() => onOpenAddMedia('video')}
+            aria-label="Add Video to Timeline"
+            data-testid="timeline-add-video-btn"
             className="min-h-[30px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md border border-violet-500/35 bg-violet-500/10 text-[11px] font-medium text-violet-200 hover:bg-violet-500/20 whitespace-nowrap"
           >
             <Plus className="w-3 h-3" /> Video
           </button>
           <button
             type="button"
-            onClick={() => onAddTrack('audio')}
-            aria-label="Add Audio Track"
+            onClick={() => onOpenAddMedia('audio')}
+            aria-label="Add Audio to Timeline"
+            data-testid="timeline-add-audio-btn"
             className="min-h-[30px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 whitespace-nowrap"
           >
             <Plus className="w-3 h-3" /> Audio
@@ -691,16 +745,26 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
               {tracks.map((tr) => {
                 const trackClips = clips.filter((c) => c.trackId === tr.id);
                 const isDropTarget = dropPreview?.trackId === tr.id;
+                const isDragHovered = dragState?.hoverTrackId === tr.id;
                 return (
                   <div
                     key={tr.id}
                     style={{ height: `${trackRowHeight}px` }}
                     onDragOver={(e) => handleTrackDragOver(e, tr)}
                     onDrop={(e) => handleTrackDrop(e, tr)}
+                    data-track-row-id={tr.id}
                     data-testid={`track-lane-${tr.id}`}
                     className={`relative transition-colors ${
                       tr.locked ? 'opacity-65' : ''
-                    } ${isDropTarget ? 'bg-amber-500/10' : ''}`}
+                    } ${
+                      isDropTarget
+                        ? 'bg-amber-500/10'
+                        : isDragHovered
+                        ? dragState?.hoverTrackCompatible
+                          ? 'bg-sky-500/12 ring-1 ring-inset ring-sky-400/40'
+                          : 'bg-rose-500/10'
+                        : ''
+                    }`}
                   >
                     {/* Drag & Drop Ghost Preview Bar */}
                     {isDropTarget && dropPreview && (
@@ -744,17 +808,17 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                           onPointerDown={(e) => startClipDrag(e, clip, 'move')}
                           onPointerMove={moveClipDrag}
                           onPointerUp={endClipDrag}
+                          onPointerCancel={endClipDrag}
                           data-testid={`timeline-clip-${clip.id}`}
-                          className={`group absolute top-1 bottom-1 rounded-md border overflow-visible cursor-grab active:cursor-grabbing transition-shadow ${colorCls} ${
+                          className={`group absolute top-1 bottom-1 rounded-md border overflow-visible cursor-grab active:cursor-grabbing touch-none transition-shadow ${colorCls} ${
                             isSelected ? 'ring-2 ring-amber-400 shadow-lg z-10' : 'hover:brightness-110'
                           }`}
                         >
                           {/* Live Floating Trim / Move Telemetry Pill */}
                           {isDraggingThis && dragState && (
                             <div className="absolute -top-6 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded bg-zinc-950/95 border border-amber-400/60 text-[10px] font-mono-tabular text-amber-200 whitespace-nowrap z-40 pointer-events-none shadow-md">
-                              In {formatShortTime(dragState.liveStart)} · Dur{' '}
-                              {formatShortTime(dragState.liveDuration)} · Out{' '}
-                              {formatShortTime(dragState.liveStart + dragState.liveDuration)}
+                              {tr.label.split(' ')[0]} · In {formatShortTime(dragState.liveStart)} · Dur{' '}
+                              {formatShortTime(dragState.liveDuration)}
                             </div>
                           )}
 
@@ -766,7 +830,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                               onPointerDown={(e) => startClipDrag(e, clip, 'trimLeft')}
                               onPointerMove={moveClipDrag}
                               onPointerUp={endClipDrag}
-                              className={`absolute left-0 top-0 bottom-0 w-3 sm:w-2.5 flex items-center justify-center cursor-ew-resize z-20 transition-colors ${
+                              onPointerCancel={endClipDrag}
+                              className={`absolute left-0 top-0 bottom-0 w-3 sm:w-2.5 flex items-center justify-center cursor-ew-resize touch-none z-20 transition-colors ${
                                 isSelected
                                   ? 'bg-amber-400/35 hover:bg-amber-400/75'
                                   : 'bg-white/10 hover:bg-amber-400/70'
@@ -834,7 +899,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                               onPointerDown={(e) => startClipDrag(e, clip, 'trimRight')}
                               onPointerMove={moveClipDrag}
                               onPointerUp={endClipDrag}
-                              className={`absolute right-0 top-0 bottom-0 w-3 sm:w-2.5 flex items-center justify-center cursor-ew-resize z-20 transition-colors ${
+                              onPointerCancel={endClipDrag}
+                              className={`absolute right-0 top-0 bottom-0 w-3 sm:w-2.5 flex items-center justify-center cursor-ew-resize touch-none z-20 transition-colors ${
                                 isSelected
                                   ? 'bg-amber-400/35 hover:bg-amber-400/75'
                                   : 'bg-white/10 hover:bg-amber-400/70'

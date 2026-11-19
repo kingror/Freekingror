@@ -12,6 +12,7 @@ import type {
 } from '../types/editor';
 import {
   estimateExportSizeMB,
+  getRealExportCapabilities,
   renderProjectExport,
   type ExportResult,
 } from '../engine/exporter';
@@ -68,6 +69,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   const durationSec = Math.max(1, getProjectDuration(clips));
   const estMB = estimateExportSizeMB(durationSec, settings.bitrateMbps, settings.format);
+  const capabilities = getRealExportCapabilities(settings.format);
 
   const handleStartExport = async () => {
     abortRef.current?.abort();
@@ -286,6 +288,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     </button>
                   ))}
                 </div>
+                <p className="text-[11px] font-mono-tabular text-zinc-400">
+                  Encoder: {capabilities.activeCodecLabel} ·{' '}
+                  {capabilities.offlineAudioMixdown ? '44.1kHz Offline Audio DSP' : 'Audio Direct'}
+                  {capabilities.webCodecsVideoEncoder ? ' · WebCodecs Ready' : ''}
+                </p>
               </div>
 
               {/* Resolution */}
