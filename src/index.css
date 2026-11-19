@@ -78,3 +78,53 @@ input[type='range'].studio-slider:focus-visible::-webkit-slider-thumb {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+@keyframes rornLogoFloat {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+    filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.35));
+  }
+  50% {
+    transform: translateY(-4px) scale(1.03);
+    filter: drop-shadow(0 0 24px rgba(99, 102, 241, 0.5));
+  }
+}
+
+@keyframes rornOrbitSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rornTextShimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.rorn-logo-cool {
+  animation: rornLogoFloat 3.2s ease-in-out infinite;
+}
+
+.rorn-orbit-cool {
+  animation: rornOrbitSpin 7s linear infinite;
+}
+
+.rorn-wordmark-cool {
+  background: linear-gradient(90deg, #e0f2fe 0%, #38bdf8 35%, #22d3ee 60%, #818cf8 100%);
+  background-size: 220% 220%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rornTextShimmer 4.5s ease-in-out infinite;
+}
+

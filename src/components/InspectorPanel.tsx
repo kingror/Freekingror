@@ -6,7 +6,9 @@ import {
   Gauge,
   Palette,
   Pipette,
+  Plus,
   RotateCcw,
+  Search,
   Sliders,
   Sparkles,
   Type,
@@ -20,14 +22,18 @@ import type {
   InspectorTab,
   SpeedRampPreset,
   TextAnimationType,
+  TextPresetType,
+  TextStyleType,
   TimelineClip,
   TransitionType,
 } from '../types/editor';
 import {
   EQ_PRESETS,
+  LUT_CATEGORIES,
   LUT_PRESETS,
   VFX_LIBRARY,
   computeAutoEnhanceGrade,
+  type LutCategory,
 } from '../engine/colorEngine';
 import { LUFS_PRESETS } from '../engine/audioNormalizer';
 import {
@@ -54,11 +60,47 @@ interface InspectorPanelProps {
   onNormalizeClipAudio: (clipId: string, targetLufs: number, preventClipping: boolean) => void;
   onNormalizeTrackAudio: (trackId: string, targetLufs: number, preventClipping: boolean) => void;
   onAutoDuckClip?: (clipId: string) => void;
+  onAddTextClip?: (preset: TextPresetType) => void;
   eyedropperActive?: boolean;
   onToggleEyedropper?: () => void;
   isNormalizingAudio?: boolean;
   normalizeStatusMessage?: string | null;
 }
+
+const INSPECTOR_TRANSITIONS: { type: TransitionType; label: string }[] = [
+  { type: 'none', label: 'Hard Cut' },
+  { type: 'crossDissolve', label: 'Cross Dissolve' },
+  { type: 'dipBlack', label: 'Dip to Black' },
+  { type: 'dipWhite', label: 'Dip to White' },
+  { type: 'slideLeft', label: 'Slide Left' },
+  { type: 'slideRight', label: 'Slide Right' },
+  { type: 'slideUp', label: 'Slide Up' },
+  { type: 'zoomIn', label: 'Punch Zoom In' },
+  { type: 'zoomOut', label: 'Zoom Out' },
+  { type: 'whipPan', label: 'Whip Pan' },
+  { type: 'glitchCut', label: 'Glitch RGB' },
+  { type: 'radialWipe', label: 'Radial Iris' },
+  { type: 'spin', label: '360 Spin' },
+];
+
+const TEXT_STYLES: { id: TextStyleType; label: string }[] = [
+  { id: 'clean', label: 'Clean' },
+  { id: 'outline', label: 'Bold Outline' },
+  { id: 'neon', label: 'Neon Glow' },
+  { id: 'cinema', label: 'Cinema' },
+  { id: 'badge', label: 'Badge Pill' },
+];
+
+const TEXT_COLOR_SWATCHES = [
+  '#F9FAFB',
+  '#38BDF8',
+  '#F59E0B',
+  '#F43F5E',
+  '#34D399',
+  '#A855F7',
+  '#FACC15',
+  '#111827',
+];
 
 interface SliderRowProps {
   label: string;
@@ -115,6 +157,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onNormalizeClipAudio,
   onNormalizeTrackAudio,
   onAutoDuckClip,
+  onAddTextClip,
   eyedropperActive = false,
   onToggleEyedropper,
   isNormalizingAudio = false,
@@ -123,6 +166,19 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   const [targetLufs, setTargetLufs] = useState<number>(-14);
   const [preventClipping, setPreventClipping] = useState<boolean>(true);
   const [keyframeEasing, setKeyframeEasing] = useState<EasingType>('easeInOut');
+  const [lutCategory, setLutCategory] = useState<'All' | LutCategory>('All');
+  const [lutQuery, setLutQuery] = useState('');
+
+  const normalizedLutQuery = lutQuery.trim().toLowerCase();
+  const visibleLuts = LUT_PRESETS.filter((l) => {
+    if (lutCategory !== 'All' && l.category !== lutCategory) return false;
+    if (!normalizedLutQuery) return true;
+    return (
+      l.name.toLowerCase().includes(normalizedLutQuery) ||
+      l.category.toLowerCase().includes(normalizedLutQuery)
+    );
+  });
+
   const tabs: { id: InspectorTab; label: string; icon: React.ReactNode }[] = [
     { id: 'color', label: 'Color', icon: <Palette className="w-3.5 h-3.5" /> },
     { id: 'vfx', label: 'VFX', icon: <Wand2 className="w-3.5 h-3.5" /> },
@@ -196,7 +252,15 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
         {activeTab === 'color' && (
           <>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-zinc-200">Stylistic Filters & LUTs</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-zinc-200">Live Filters</span>
+                <span
+                  data-testid="inspector-filter-count"
+                  className="rounded bg-cyan-500/15 border border-cyan-400/25 px-1.5 py-0.5 text-[10px] font-mono-tabular text-cyan-300"
+                >
+                  {LUT_PRESETS.length}+
+                </span>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -224,8 +288,38 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
-              {LUT_PRESETS.map((lut) => (
+
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={lutQuery}
+                onChange={(e) => setLutQuery(e.target.value)}
+                placeholder={`Search ${LUT_PRESETS.length} filters...`}
+                aria-label="Search color filters"
+                className="w-full rounded-lg border border-white/10 bg-[#141720] pl-8 pr-2.5 py-1.5 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-0.5">
+              {LUT_CATEGORIES.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setLutCategory(cat)}
+                  className={`px-2 py-1 rounded text-[10px] font-medium shrink-0 ${
+                    lutCategory === cat
+                      ? 'bg-amber-500 text-zinc-950 font-semibold'
+                      : 'bg-[#161A24] text-zinc-300 hover:bg-[#1E2330]'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 max-h-[220px] overflow-y-auto studio-scroll pr-1">
+              {visibleLuts.map((lut) => (
                 <button
                   key={lut.id}
                   type="button"
@@ -235,13 +329,17 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       colorGrade: { ...prev.colorGrade, lutId: lut.id },
                     }))
                   }
-                  className={`px-2.5 py-2 rounded-lg border text-left text-[11px] font-medium transition-colors truncate ${
+                  className={`px-2 py-1.5 rounded-lg border text-left text-[11px] font-medium transition-colors flex items-center gap-2 ${
                     clip.colorGrade.lutId === lut.id
                       ? 'border-amber-500 bg-amber-500/15 text-amber-200'
                       : 'border-white/10 bg-[#141720] text-zinc-300 hover:bg-[#1A1F2B]'
                   }`}
                 >
-                  {lut.name}
+                  <span
+                    style={{ background: lut.previewGradient }}
+                    className="w-4 h-4 rounded shrink-0 border border-white/20"
+                  />
+                  <span className="truncate">{lut.name}</span>
                 </button>
               ))}
             </div>
@@ -911,7 +1009,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
         )}
 
         {activeTab === 'transition' && (
-          <>
+          <div className="space-y-3">
             <div className="space-y-1.5">
               <label htmlFor="transition-type-select" className="text-xs font-semibold text-zinc-200 block">
                 Entrance Transition
@@ -928,23 +1026,41 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     },
                   }))
                 }
-                className="w-full min-h-[38px] rounded-lg border border-white/10 bg-[#141720] px-2.5 text-xs text-zinc-100"
+                className="w-full min-h-[36px] rounded-lg border border-white/10 bg-[#141720] px-2.5 text-xs text-zinc-100"
               >
-                <option value="none">None (Hard Cut)</option>
-                <option value="crossDissolve">Cross Dissolve</option>
-                <option value="dipBlack">Dip to Black</option>
-                <option value="dipWhite">Dip to White</option>
-                <option value="slideLeft">Slide Left</option>
-                <option value="slideRight">Slide Right</option>
-                <option value="slideUp">Slide Up</option>
-                <option value="zoomIn">Punch Zoom In</option>
-                <option value="zoomOut">Zoom Out Drop</option>
-                <option value="whipPan">Whip Pan</option>
-                <option value="glitchCut">Glitch RGB Cut</option>
-                <option value="radialWipe">Radial Iris Wipe</option>
-                <option value="spin">360 Spin Cut</option>
+                {INSPECTOR_TRANSITIONS.map((tr) => (
+                  <option key={tr.type} value={tr.type}>
+                    {tr.label}
+                  </option>
+                ))}
               </select>
             </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              {INSPECTOR_TRANSITIONS.map((tr) => {
+                const active = clip.transitionIn.type === tr.type;
+                return (
+                  <button
+                    key={tr.type}
+                    type="button"
+                    onClick={() =>
+                      onUpdateClip(clip.id, (p) => ({
+                        ...p,
+                        transitionIn: { ...p.transitionIn, type: tr.type },
+                      }))
+                    }
+                    className={`px-2.5 py-2 rounded-lg border text-left text-[11px] font-medium transition-colors truncate ${
+                      active
+                        ? 'border-amber-500 bg-amber-500/15 text-amber-200'
+                        : 'border-white/10 bg-[#141720] text-zinc-300 hover:bg-[#1A1F2B]'
+                    }`}
+                  >
+                    {tr.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <SliderRow
               label="Transition Duration"
               value={clip.transitionIn.duration}
@@ -959,15 +1075,60 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                 }))
               }
             />
-          </>
+
+            <div className="grid grid-cols-4 gap-1">
+              {[0.3, 0.5, 1.0, 1.5].map((sec) => (
+                <button
+                  key={sec}
+                  type="button"
+                  onClick={() =>
+                    onUpdateClip(clip.id, (p) => ({
+                      ...p,
+                      transitionIn: { ...p.transitionIn, duration: sec },
+                    }))
+                  }
+                  className={`py-1 rounded-md text-[11px] font-mono-tabular font-medium border ${
+                    Math.abs(clip.transitionIn.duration - sec) < 0.05
+                      ? 'border-amber-500 bg-amber-500/15 text-amber-200'
+                      : 'border-white/10 bg-[#141720] text-zinc-300'
+                  }`}
+                >
+                  {sec}s
+                </button>
+              ))}
+            </div>
+          </div>
         )}
 
         {activeTab === 'text' && (
           <>
             {clip.kind !== 'text' || !clip.textConfig ? (
-              <p className="text-xs text-zinc-400 leading-relaxed">
-                Select a Title clip on track T1 (or add one from the Text tab in the Media Vault) to customize typography, animation, and lower-third styling.
-              </p>
+              <div className="space-y-3">
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Select a Title clip on track T1 or tap a style below to insert live-styled text at the playhead:
+                </p>
+                {onAddTextClip && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        { preset: 'title', label: 'Hero Title' },
+                        { preset: 'lowerThird', label: 'Lower Third' },
+                        { preset: 'subtitle', label: 'Reel Caption' },
+                        { preset: 'kinetic', label: 'Kinetic Pop' },
+                      ] as { preset: TextPresetType; label: string }[]
+                    ).map((item) => (
+                      <button
+                        key={item.preset}
+                        type="button"
+                        onClick={() => onAddTextClip(item.preset)}
+                        className="px-2.5 py-2 rounded-lg border border-pink-400/30 bg-pink-500/10 hover:bg-pink-500/20 text-xs font-semibold text-pink-200 flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="space-y-3">
                 <div className="space-y-1">
@@ -1004,11 +1165,96 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     className="w-full rounded-lg border border-white/15 bg-[#141720] px-3 py-2 text-xs text-white"
                   />
                 </div>
+
+                {/* Text Visual Style Selector */}
+                <div className="space-y-1.5 pt-1 border-t border-white/10">
+                  <span className="text-xs font-semibold text-zinc-200 block">Text Style</span>
+                  <div className="grid grid-cols-3 gap-1">
+                    {TEXT_STYLES.map((st) => {
+                      const active = (clip.textConfig?.textStyle ?? 'clean') === st.id;
+                      return (
+                        <button
+                          key={st.id}
+                          type="button"
+                          onClick={() =>
+                            onUpdateClip(clip.id, (p) => ({
+                              ...p,
+                              textConfig: p.textConfig
+                                ? { ...p.textConfig, textStyle: st.id }
+                                : undefined,
+                            }))
+                          }
+                          className={`px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors truncate ${
+                            active
+                              ? 'border-amber-500 bg-amber-500/15 text-amber-200'
+                              : 'border-white/10 bg-[#141720] text-zinc-300 hover:bg-[#1A1F2B]'
+                          }`}
+                        >
+                          {st.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Font Family + Weight */}
+                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <div className="space-y-1">
+                    <label htmlFor="text-font-select" className="text-xs font-medium text-zinc-300 block">
+                      Font Family
+                    </label>
+                    <select
+                      id="text-font-select"
+                      value={clip.textConfig.fontFamily}
+                      onChange={(e) =>
+                        onUpdateClip(clip.id, (p) => ({
+                          ...p,
+                          textConfig: p.textConfig ? { ...p.textConfig, fontFamily: e.target.value } : undefined,
+                        }))
+                      }
+                      className="w-full min-h-[36px] rounded-lg border border-white/10 bg-[#141720] px-2 text-xs text-zinc-100"
+                    >
+                      <option value="Plus Jakarta Sans">Plus Jakarta Sans</option>
+                      <option value="JetBrains Mono">JetBrains Mono</option>
+                      <option value="Georgia">Georgia (Serif)</option>
+                      <option value="Impact">Impact (Poster)</option>
+                      <option value="Arial Black">Arial Black</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                      <option value="Courier New">Courier New</option>
+                      <option value="Verdana">Verdana</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-medium text-zinc-400 block">Weight</span>
+                    <div className="inline-flex rounded-lg border border-white/10 bg-[#141720] p-0.5">
+                      {(['500', '700', '900'] as const).map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          onClick={() =>
+                            onUpdateClip(clip.id, (p) => ({
+                              ...p,
+                              textConfig: p.textConfig ? { ...p.textConfig, fontWeight: w } : undefined,
+                            }))
+                          }
+                          className={`px-2 py-1 rounded text-[10px] font-mono-tabular font-semibold ${
+                            (clip.textConfig?.fontWeight ?? '700') === w
+                              ? 'bg-amber-500 text-zinc-950'
+                              : 'text-zinc-300 hover:bg-white/5'
+                          }`}
+                        >
+                          {w}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
                 <SliderRow
                   label="Font Size"
                   value={clip.textConfig.fontSize}
-                  min={22}
-                  max={110}
+                  min={16}
+                  max={140}
                   unit="px"
                   onChange={(v) =>
                     onUpdateClip(clip.id, (p) => ({
@@ -1017,6 +1263,21 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     }))
                   }
                 />
+
+                <SliderRow
+                  label="Letter Spacing"
+                  value={clip.textConfig.letterSpacing ?? 0}
+                  min={-2}
+                  max={18}
+                  unit="px"
+                  onChange={(v) =>
+                    onUpdateClip(clip.id, (p) => ({
+                      ...p,
+                      textConfig: p.textConfig ? { ...p.textConfig, letterSpacing: v } : undefined,
+                    }))
+                  }
+                />
+
                 <div className="space-y-1">
                   <label htmlFor="text-anim-select" className="text-xs font-medium text-zinc-300 block">
                     Entrance Animation
@@ -1032,7 +1293,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                           : undefined,
                       }))
                     }
-                    className="w-full min-h-[38px] rounded-lg border border-white/10 bg-[#141720] px-2.5 text-xs text-zinc-100"
+                    className="w-full min-h-[36px] rounded-lg border border-white/10 bg-[#141720] px-2.5 text-xs text-zinc-100"
                   >
                     <option value="none">None</option>
                     <option value="fade">Smooth Fade</option>
@@ -1042,26 +1303,30 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   </select>
                 </div>
 
-                <div className="space-y-1">
-                  <label htmlFor="text-font-select" className="text-xs font-medium text-zinc-300 block">
-                    Font Family
-                  </label>
-                  <select
-                    id="text-font-select"
-                    value={clip.textConfig.fontFamily}
-                    onChange={(e) =>
-                      onUpdateClip(clip.id, (p) => ({
-                        ...p,
-                        textConfig: p.textConfig ? { ...p.textConfig, fontFamily: e.target.value } : undefined,
-                      }))
-                    }
-                    className="w-full min-h-[38px] rounded-lg border border-white/10 bg-[#141720] px-2.5 text-xs text-zinc-100"
-                  >
-                    <option value="Plus Jakarta Sans">Plus Jakarta Sans (Studio)</option>
-                    <option value="JetBrains Mono">JetBrains Mono (Technical)</option>
-                    <option value="Georgia">Georgia (Editorial Serif)</option>
-                    <option value="Impact">Impact (Kinetic Poster)</option>
-                  </select>
+                {/* Quick Text Fill Swatches */}
+                <div className="space-y-1.5 pt-1 border-t border-white/10">
+                  <span className="text-[11px] font-medium text-zinc-300 block">Text Color Swatches</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {TEXT_COLOR_SWATCHES.map((hex) => (
+                      <button
+                        key={hex}
+                        type="button"
+                        aria-label={`Set text color ${hex}`}
+                        onClick={() =>
+                          onUpdateClip(clip.id, (p) => ({
+                            ...p,
+                            textConfig: p.textConfig ? { ...p.textConfig, color: hex } : undefined,
+                          }))
+                        }
+                        style={{ backgroundColor: hex }}
+                        className={`w-6 h-6 rounded-md border transition-transform ${
+                          clip.textConfig?.color.toLowerCase() === hex.toLowerCase()
+                            ? 'border-amber-400 scale-110 ring-1 ring-amber-400'
+                            : 'border-white/25 hover:scale-105'
+                        }`}
+                      />
+                    ))}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 pt-1">

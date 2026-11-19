@@ -139,6 +139,8 @@ export interface AudioConfig {
 
 export type InsertPlacement = 'front' | 'back' | 'time';
 
+export type TextStyleType = 'clean' | 'outline' | 'neon' | 'cinema' | 'badge';
+
 export interface TextOverlayConfig {
   text: string;
   subtitle?: string;
@@ -150,6 +152,9 @@ export interface TextOverlayConfig {
   strokeColor: string;
   animation: TextAnimationType;
   preset: TextPresetType;
+  textStyle?: TextStyleType;
+  fontWeight?: '500' | '700' | '900';
+  letterSpacing?: number;
 }
 
 export type ClipMaskShape = 'none' | 'circle' | 'rounded' | 'splitLeft' | 'splitRight' | 'cinema';

@@ -24,7 +24,13 @@ test('buildCanvasFilterString applies LUT, hue rotation, blur VFX, and user grad
   assert.ok(filter.includes('contrast(118%)'));
   assert.ok(filter.includes('hue-rotate('));
   assert.ok(filter.includes('blur('));
-  assert.ok(LUT_PRESETS.length >= 10);
+  assert.ok(LUT_PRESETS.length >= 100, `Expected 100+ filters, got ${LUT_PRESETS.length}`);
+  const uniqueIds = new Set(LUT_PRESETS.map((l) => l.id));
+  assert.equal(uniqueIds.size, LUT_PRESETS.length);
+  for (const lut of LUT_PRESETS) {
+    const str = buildCanvasFilterString({ ...DEFAULT_COLOR_GRADE, lutId: lut.id });
+    assert.ok(str.includes('brightness(') && str.includes('contrast('));
+  }
   assert.ok(VFX_LIBRARY.length >= 6);
 });
 

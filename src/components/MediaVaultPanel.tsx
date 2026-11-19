@@ -5,6 +5,7 @@ import {
   Music,
   Palette,
   Plus,
+  Search,
   Sparkles,
   Square,
   Type,
@@ -22,7 +23,12 @@ import type {
   TransitionType,
   VfxConfig,
 } from '../types/editor';
-import { LUT_PRESETS, VFX_LIBRARY } from '../engine/colorEngine';
+import {
+  LUT_CATEGORIES,
+  LUT_PRESETS,
+  VFX_LIBRARY,
+  type LutCategory,
+} from '../engine/colorEngine';
 import { formatShortTime } from '../engine/timelineMath';
 
 interface MediaVaultPanelProps {
@@ -87,7 +93,8 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
   isNormalizingAudio = false,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [lutCat, setLutCat] = useState<'All' | 'Cinema' | 'Film' | 'Vintage' | 'Mono'>('All');
+  const [lutCat, setLutCat] = useState<'All' | LutCategory>('All');
+  const [lutSearch, setLutSearch] = useState('');
   const [vfxCat, setVfxCat] = useState<'All' | 'Glitch' | 'Lens' | 'Cinema' | 'Retro'>('All');
   const [isRecording, setIsRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
@@ -113,7 +120,7 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
 
   const handleAssetDragStart = (e: React.DragEvent, asset: MediaAsset) => {
     e.dataTransfer.setData(
-      'application/x-kineforge-asset',
+      'application/x-rorn-asset',
       JSON.stringify({ assetId: asset.id, kind: asset.kind })
     );
     e.dataTransfer.effectAllowed = 'copy';
@@ -161,9 +168,16 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
     }
   };
 
-  const filteredLuts = LUT_PRESETS.filter((l) =>
-    lutCat === 'All' ? true : l.category === lutCat
-  );
+  const query = lutSearch.trim().toLowerCase();
+  const filteredLuts = LUT_PRESETS.filter((l) => {
+    if (lutCat !== 'All' && l.category !== lutCat) return false;
+    if (!query) return true;
+    return (
+      l.name.toLowerCase().includes(query) ||
+      l.category.toLowerCase().includes(query) ||
+      l.description.toLowerCase().includes(query)
+    );
+  });
   const filteredVfx = VFX_LIBRARY.filter((f) =>
     vfxCat === 'All' ? true : f.category === vfxCat
   );
@@ -303,8 +317,32 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
 
         {activeTab === 'luts' && (
           <div className="space-y-2.5">
-            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
-              {(['All', 'Cinema', 'Film', 'Vintage', 'Mono'] as const).map((cat) => (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-zinc-200">
+                Live Color Filters
+              </span>
+              <span
+                data-testid="vault-filter-count"
+                className="rounded-md bg-cyan-500/15 border border-cyan-400/25 px-2 py-0.5 text-[10px] font-mono-tabular font-semibold text-cyan-300"
+              >
+                {filteredLuts.length} / {LUT_PRESETS.length} Live
+              </span>
+            </div>
+
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={lutSearch}
+                onChange={(e) => setLutSearch(e.target.value)}
+                placeholder={`Search ${LUT_PRESETS.length}+ live filters...`}
+                aria-label="Search live filters"
+                className="w-full rounded-lg border border-white/10 bg-[#13161E] pl-8 pr-2.5 py-1.5 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-0.5">
+              {LUT_CATEGORIES.map((cat) => (
                 <button
                   key={cat}
                   type="button"
@@ -322,9 +360,9 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
             <p className="text-[11px] text-zinc-400">
               {selectedClip
                 ? `Filter Target: ${selectedClip.name}`
-                : 'Select a visual clip to preview stylistic filters in real time.'}
+                : 'Select a visual clip to preview live filters in real time.'}
             </p>
-            <div className="grid grid-cols-1 gap-2">
+            <div className="grid grid-cols-1 gap-1.5">
               {filteredLuts.map((lut) => {
                 const isSelected = selectedClip?.colorGrade.lutId === lut.id;
                 return (
@@ -333,7 +371,7 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
                     type="button"
                     disabled={!selectedClip || selectedClip.kind === 'audio'}
                     onClick={() => onApplyLut(lut.id)}
-                    className={`w-full text-left rounded-xl border p-2.5 flex items-center gap-3 transition-all disabled:opacity-40 ${
+                    className={`w-full text-left rounded-xl border p-2 flex items-center gap-2.5 transition-all disabled:opacity-40 ${
                       isSelected
                         ? 'border-amber-500 bg-amber-500/10'
                         : 'border-white/10 bg-[#13161E] hover:bg-[#191D28]'
@@ -341,15 +379,25 @@ export const MediaVaultPanel: React.FC<MediaVaultPanelProps> = ({
                   >
                     <div
                       style={{ background: lut.previewGradient }}
-                      className="w-10 h-10 rounded-lg shrink-0 border border-white/15"
+                      className="w-9 h-9 rounded-lg shrink-0 border border-white/15"
                     />
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-zinc-100">{lut.name}</p>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <p className="text-xs font-semibold text-zinc-100 truncate">{lut.name}</p>
+                        <span className="text-[9px] font-mono-tabular text-zinc-400 shrink-0">
+                          {lut.category}
+                        </span>
+                      </div>
                       <p className="text-[11px] text-zinc-400 line-clamp-1">{lut.description}</p>
                     </div>
                   </button>
                 );
               })}
+              {filteredLuts.length === 0 && (
+                <p className="text-xs text-zinc-500 py-4 text-center">
+                  No filters matched &ldquo;{lutSearch}&rdquo;.
+                </p>
+              )}
             </div>
           </div>
         )}

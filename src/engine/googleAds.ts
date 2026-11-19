@@ -137,8 +137,8 @@ export async function shareExportedMedia(
   if (file && nav.share && nav.canShare?.({ files: [file] })) {
     await nav.share({
       files: [file],
-      title: `${projectTitle} · KineForge Studio`,
-      text: `Edited with KineForge Studio (${result.filename})`,
+      title: `${projectTitle} · RORN`,
+      text: `Edited with RORN (${result.filename})`,
     });
     return {
       mode: 'native-file',
@@ -149,8 +149,8 @@ export async function shareExportedMedia(
   if (nav.share) {
     try {
       await nav.share({
-        title: `${projectTitle} · KineForge Studio`,
-        text: `Check out "${result.filename}" rendered in KineForge Studio.`,
+        title: `${projectTitle} · RORN`,
+        text: `Check out "${result.filename}" rendered in RORN.`,
       });
       return {
         mode: 'native-text',

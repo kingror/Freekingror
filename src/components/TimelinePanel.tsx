@@ -358,7 +358,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     const cursorTime = clientXToTime(e.clientX);
     const slot = computeDropSlot(track, cursorTime);
 
-    const payload = e.dataTransfer.getData('application/x-kineforge-asset');
+    const payload = e.dataTransfer.getData('application/x-rorn-asset');
     if (payload) {
       try {
         const parsed = JSON.parse(payload) as { assetId?: string };

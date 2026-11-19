@@ -239,7 +239,7 @@ export async function renderProjectExport(params: {
 }): Promise<ExportResult> {
   const { clips, tracks, assets, aspectRatio, settings, projectTitle, onProgress, signal } = params;
   const totalDuration = Math.max(1, getProjectDuration(clips));
-  const safeSlug = (projectTitle || 'kineforge_export')
+  const safeSlug = (projectTitle || 'rorn_export')
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '_');
 

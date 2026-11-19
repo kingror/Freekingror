@@ -177,7 +177,7 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `kineforge_frame_${Math.round(playhead * 1000)}.png`;
+      a.download = `rorn_frame_${Math.round(playhead * 1000)}.png`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1500);
     }, 'image/png');

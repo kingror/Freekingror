@@ -21,6 +21,12 @@ export class MediaElementCache {
   private offscreenCanvas: HTMLCanvasElement | null = null;
   private vfxCanvas: HTMLCanvasElement | null = null;
 
+  preloadImage(src: string, img: HTMLImageElement): void {
+    if (img.complete && img.naturalWidth > 0) {
+      this.images.set(src, img);
+    }
+  }
+
   getImage(src: string, onLoad?: () => void): HTMLImageElement | null {
     let img = this.images.get(src);
     if (!img) {
@@ -203,14 +209,15 @@ function drawTextOverlay(
   clip: TimelineClip,
   width: number,
   height: number,
-  localTime: number
+  localTime: number,
+  isPlaying: boolean
 ) {
   const cfg = clip.textConfig;
   if (!cfg) return;
 
   const tf = evaluateKeyframes(clip, localTime);
-  const animIn = clamp(localTime / 0.45, 0, 1);
-  const animOut = clamp((clip.duration - localTime) / 0.35, 0, 1);
+  const animIn = isPlaying ? clamp(localTime / 0.45, 0, 1) : 1;
+  const animOut = isPlaying ? clamp((clip.duration - localTime) / 0.35, 0, 1) : 1;
   let alpha = tf.opacity * Math.min(1, animOut);
   let offsetY = 0;
   let scaleAnim = 1;
@@ -229,7 +236,8 @@ function drawTextOverlay(
       alpha *= animIn;
       break;
     case 'typewriter': {
-      const chars = Math.max(1, Math.floor(cfg.text.length * clamp(localTime / 1.2, 0.05, 1)));
+      const progress = isPlaying ? clamp(localTime / 1.2, 0.05, 1) : 1;
+      const chars = Math.max(1, Math.floor(cfg.text.length * progress));
       visibleText = cfg.text.slice(0, chars);
       break;
     }
@@ -246,47 +254,103 @@ function drawTextOverlay(
   ctx.rotate((tf.rotation * Math.PI) / 180);
   ctx.scale(tf.scale * scaleAnim, tf.scale * scaleAnim);
 
-  const fontSize = Math.max(16, Math.round(cfg.fontSize * scaleFactor));
-  ctx.font = `700 ${fontSize}px "${cfg.fontFamily}", "Plus Jakarta Sans", sans-serif`;
+  const textStyle = cfg.textStyle ?? 'clean';
+  const fontWeight = cfg.fontWeight ?? '700';
+  const letterSpacingPx = Math.round((cfg.letterSpacing ?? 0) * scaleFactor);
+  const fontSize = Math.max(14, Math.round(cfg.fontSize * scaleFactor));
+
+  const applyTracking = (tracking: number) => {
+    const ctxWithSpacing = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
+    if ('letterSpacing' in ctxWithSpacing) {
+      ctxWithSpacing.letterSpacing = `${tracking}px`;
+    }
+  };
+
+  applyTracking(textStyle === 'cinema' && letterSpacingPx === 0 ? Math.round(6 * scaleFactor) : letterSpacingPx);
+  ctx.font = `${fontWeight} ${fontSize}px "${cfg.fontFamily}", "Plus Jakarta Sans", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
   const metrics = ctx.measureText(visibleText);
   const subText = cfg.subtitle?.trim() || '';
   const subFontSize = Math.max(11, Math.round(fontSize * 0.42));
-  let boxW = metrics.width + 48 * scaleFactor;
+  let boxW = metrics.width + 54 * scaleFactor;
   if (subText) {
     ctx.font = `500 ${subFontSize}px "Plus Jakarta Sans", sans-serif`;
-    boxW = Math.max(boxW, ctx.measureText(subText).width + 48 * scaleFactor);
+    boxW = Math.max(boxW, ctx.measureText(subText).width + 54 * scaleFactor);
   }
-  const boxH = (subText ? fontSize * 1.95 : fontSize * 1.45) + 16 * scaleFactor;
+  const boxH = (subText ? fontSize * 1.95 : fontSize * 1.45) + 18 * scaleFactor;
 
-  if (cfg.bgOpacity > 0.02) {
+  const effectiveBgOpacity =
+    textStyle === 'badge' ? Math.max(0.75, cfg.bgOpacity) : cfg.bgOpacity;
+
+  if (effectiveBgOpacity > 0.02 || textStyle === 'badge') {
     ctx.save();
-    ctx.globalAlpha *= cfg.bgOpacity;
-    ctx.fillStyle = cfg.bgColor;
-    const r = 10 * scaleFactor;
+    ctx.globalAlpha *= effectiveBgOpacity;
+    ctx.fillStyle = cfg.bgColor || '#0B1120';
+    const r = (textStyle === 'badge' ? 14 : 10) * scaleFactor;
     ctx.beginPath();
     ctx.roundRect(-boxW / 2, -boxH / 2, boxW, boxH, r);
     ctx.fill();
+    if (textStyle === 'badge') {
+      ctx.globalAlpha = clamp(alpha, 0, 1);
+      ctx.lineWidth = Math.max(1.5, 2 * scaleFactor);
+      ctx.strokeStyle = cfg.color;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
   const mainY = subText ? -subFontSize * 0.55 : 0;
-  ctx.font = `700 ${fontSize}px "${cfg.fontFamily}", "Plus Jakarta Sans", sans-serif`;
+  ctx.font = `${fontWeight} ${fontSize}px "${cfg.fontFamily}", "Plus Jakarta Sans", sans-serif`;
   if (cfg.preset === 'lowerThird') {
     ctx.fillStyle = '#F59E0B';
     ctx.fillRect(-boxW / 2, -boxH / 2 + 8 * scaleFactor, 4 * scaleFactor, boxH - 16 * scaleFactor);
   }
-  ctx.lineWidth = Math.max(1, 3 * scaleFactor);
-  ctx.strokeStyle = cfg.strokeColor;
+
+  ctx.save();
+  if (textStyle === 'neon') {
+    ctx.shadowColor = cfg.color;
+    ctx.shadowBlur = 18 * scaleFactor;
+  } else if (textStyle === 'cinema') {
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = 12 * scaleFactor;
+    ctx.shadowOffsetY = 4 * scaleFactor;
+  }
+
+  ctx.lineJoin = 'round';
+  ctx.lineWidth =
+    textStyle === 'outline'
+      ? Math.max(2, 7 * scaleFactor)
+      : textStyle === 'neon'
+      ? Math.max(1, 2 * scaleFactor)
+      : Math.max(1, 3 * scaleFactor);
+  ctx.strokeStyle = textStyle === 'neon' ? cfg.color : cfg.strokeColor;
   ctx.strokeText(visibleText, 0, mainY);
   ctx.fillStyle = cfg.color;
   ctx.fillText(visibleText, 0, mainY);
+  if (textStyle === 'neon') {
+    ctx.shadowBlur = 6 * scaleFactor;
+    ctx.fillStyle = '#ffffff';
+    ctx.globalAlpha *= 0.45;
+    ctx.fillText(visibleText, 0, mainY);
+  }
+  ctx.restore();
+
+  if (textStyle === 'cinema') {
+    ctx.save();
+    ctx.fillStyle = cfg.color;
+    ctx.globalAlpha *= 0.7;
+    const ruleW = Math.min(boxW * 0.55, 160 * scaleFactor);
+    const ruleY = subText ? mainY + fontSize * 0.48 : mainY + fontSize * 0.62;
+    ctx.fillRect(-ruleW / 2, ruleY, ruleW, Math.max(1.5, 2 * scaleFactor));
+    ctx.restore();
+  }
 
   if (subText) {
+    applyTracking(Math.round(1 * scaleFactor));
     ctx.font = `500 ${subFontSize}px "Plus Jakarta Sans", sans-serif`;
-    ctx.fillStyle = 'rgba(243, 244, 246, 0.85)';
+    ctx.fillStyle = 'rgba(243, 244, 246, 0.88)';
     ctx.fillText(subText, 0, mainY + fontSize * 0.72);
   }
   ctx.restore();
@@ -338,7 +402,7 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     const localTime = clamp(playhead - clip.startTime, 0, clip.duration);
 
     if (clip.kind === 'text') {
-      drawTextOverlay(ctx, clip, width, height, localTime);
+      drawTextOverlay(ctx, clip, width, height, localTime, isPlaying);
       continue;
     }
 

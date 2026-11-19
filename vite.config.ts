@@ -14,9 +14,9 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
-          id: '/',
-          name: 'KineForge Studio',
-          short_name: 'KineForge',
+          id: 'com.rorn.pro',
+          name: 'RORN',
+          short_name: 'RORN',
           description: 'Android-first multi-format non-linear video editor with live color grading, chroma key, keyframes, and export.',
           theme_color: '#090A0D',
           background_color: '#090A0D',
@@ -79,6 +79,9 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

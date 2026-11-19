@@ -6,6 +6,7 @@ import {
   Palette,
   Pipette,
   Sliders,
+  Sparkles,
   Type,
   Volume2,
   Wand2,
@@ -70,35 +71,79 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { FormatsModal } from './components/FormatsModal';
 import { ExportModal } from './components/ExportModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { SplashScreen } from './components/SplashScreen';
+import { HomeScreen } from './components/HomeScreen';
+import { shouldSkipSplashFromSearch } from './engine/splashProgress';
+import {
+  computeProjectProgress,
+  createNewBlankProjectRecord,
+  deleteSavedProject,
+  loadSavedProjects,
+  upsertSavedProject,
+  type SavedProjectRecord,
+} from './engine/projectStorage';
 
 interface EditorSnapshot {
   clips: TimelineClip[];
   tracks: TimelineTrack[];
 }
 
+type AppScreenMode = 'splash' | 'home' | 'editor';
+
 export default function App() {
-  const [projectTitle, setProjectTitle] = useState('Golden Horizon Reel');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
+  const [screenMode, setScreenMode] = useState<AppScreenMode>(() =>
+    typeof window !== 'undefined' && shouldSkipSplashFromSearch(window.location.search)
+      ? 'home'
+      : 'splash'
+  );
+  const [savedProjects, setSavedProjects] = useState<SavedProjectRecord[]>(() =>
+    loadSavedProjects()
+  );
+  const [activeProjectId, setActiveProjectId] = useState<string>(
+    () => savedProjects[0]?.id ?? 'proj_golden_horizon'
+  );
+  const [projectCreatedAt, setProjectCreatedAt] = useState<number>(
+    () => savedProjects[0]?.createdAt ?? Date.now()
+  );
+  const [exportedCount, setExportedCount] = useState<number>(
+    () => savedProjects[0]?.exportedCount ?? 0
+  );
+
+  const [projectTitle, setProjectTitle] = useState(
+    () => savedProjects[0]?.title ?? 'Golden Horizon Reel'
+  );
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(
+    () => savedProjects[0]?.aspectRatio ?? '16:9'
+  );
   const [assets, setAssets] = useState<MediaAsset[]>(() => {
     const wavUrl = createAmbientScoreWavUrl(12);
     return createInitialAssets(wavUrl);
   });
-  const [tracks, setTracks] = useState<TimelineTrack[]>(INITIAL_TRACKS);
-  const [clips, setClips] = useState<TimelineClip[]>(() => createInitialClips());
-  const [selectedClipId, setSelectedClipId] = useState<string | null>('clip_v1_alpine');
+  const [tracks, setTracks] = useState<TimelineTrack[]>(
+    () => savedProjects[0]?.tracks ?? INITIAL_TRACKS
+  );
+  const [clips, setClips] = useState<TimelineClip[]>(
+    () => savedProjects[0]?.clips ?? createInitialClips()
+  );
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(
+    () => savedProjects[0]?.clips?.[0]?.id ?? 'clip_v1_alpine'
+  );
 
   const [historyPast, setHistoryPast] = useState<EditorSnapshot[]>([]);
   const [historyFuture, setHistoryFuture] = useState<EditorSnapshot[]>([]);
 
-  const [playhead, setPlayhead] = useState(1.2);
+  const [playhead, setPlayhead] = useState(() => savedProjects[0]?.playhead ?? 1.2);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [loopEnabled, setLoopEnabled] = useState(false);
   const [eyedropperActive, setEyedropperActive] = useState(false);
-  const [markers, setMarkers] = useState<TimelineMarker[]>([
-    { id: 'mk_intro', time: 0, label: 'Intro', color: '#22d3ee' },
-    { id: 'mk_drop', time: 5.5, label: 'Scene Cut', color: '#22d3ee' },
-  ]);
+  const [markers, setMarkers] = useState<TimelineMarker[]>(
+    () =>
+      savedProjects[0]?.markers ?? [
+        { id: 'mk_intro', time: 0, label: 'Intro', color: '#22d3ee' },
+        { id: 'mk_drop', time: 5.5, label: 'Scene Cut', color: '#22d3ee' },
+      ]
+  );
   const [clipboardClip, setClipboardClip] = useState<TimelineClip | null>(null);
   const [zoomPxPerSec, setZoomPxPerSec] = useState(64);
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -259,6 +304,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (screenMode !== 'editor') return;
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -339,6 +385,7 @@ export default function App() {
     handleAddMarker,
     handleUndo,
     handleRedo,
+    screenMode,
   ]);
 
   const handleUpdateClip = useCallback(
@@ -808,7 +855,7 @@ export default function App() {
         title: { text: 'CHAPTER ONE', subtitle: '4K Cinema Edit', fontSize: 68, y: 0, anim: 'fade' },
         lowerThird: {
           text: 'DIRECTOR CUT',
-          subtitle: 'KineForge Mobile Studio',
+          subtitle: 'RORN Mobile Studio',
           fontSize: 48,
           y: 0.28,
           anim: 'slideUp',
@@ -849,6 +896,9 @@ export default function App() {
           subtitle: d.subtitle,
           fontFamily: 'Plus Jakarta Sans',
           fontSize: d.fontSize,
+          fontWeight: preset === 'kinetic' ? '900' : '700',
+          letterSpacing: preset === 'title' ? 2 : 0,
+          textStyle: preset === 'kinetic' ? 'outline' : preset === 'lowerThird' ? 'badge' : 'clean',
           color: '#F9FAFB',
           bgColor: '#090A0D',
           bgOpacity: preset === 'kinetic' ? 0 : 0.45,
@@ -860,7 +910,9 @@ export default function App() {
       commitMutation([...clips, clip]);
       setSelectedClipId(clip.id);
       setInspectorTab('text');
-      setMobileSheet('inspector');
+      if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+        setMobileSheet('inspector');
+      }
     },
     [clips, tracks, playhead, commitMutation]
   );
@@ -1069,6 +1121,7 @@ export default function App() {
         normalizeAudioClips((c) => c.trackId === trackId, targetLufs, preventClipping)
       }
       onAutoDuckClip={handleAutoDuckClip}
+      onAddTextClip={handleAddTextClip}
       eyedropperActive={eyedropperActive}
       onToggleEyedropper={() => {
         setEyedropperActive((a) => !a);
@@ -1078,6 +1131,153 @@ export default function App() {
       normalizeStatusMessage={normalizeStatusMessage}
     />
   );
+
+  const persistCurrentProject = useCallback(
+    (overrideExportCount?: number) => {
+      const visualClip = clips.find((c) => c.kind === 'image' || c.kind === 'video');
+      const visualAsset = visualClip
+        ? assets.find((a) => a.id === visualClip.assetId)
+        : undefined;
+      const effectiveExports = overrideExportCount ?? exportedCount;
+      const nextRecord: SavedProjectRecord = {
+        id: activeProjectId,
+        title: projectTitle.trim() || 'Untitled Project',
+        aspectRatio,
+        tracks,
+        clips,
+        markers,
+        playhead,
+        durationSec: Number(getProjectDuration(clips).toFixed(1)),
+        progressPct: computeProjectProgress({
+          clips,
+          tracks,
+          playhead,
+          exportedCount: effectiveExports,
+        }),
+        createdAt: projectCreatedAt,
+        updatedAt: Date.now(),
+        thumbnailSrc:
+          visualAsset && !visualAsset.src.startsWith('blob:')
+            ? visualAsset.src
+            : undefined,
+        clipCount: clips.length,
+        exportedCount: effectiveExports,
+      };
+      setSavedProjects((prev) => upsertSavedProject(nextRecord, prev));
+    },
+    [
+      activeProjectId,
+      projectTitle,
+      aspectRatio,
+      tracks,
+      clips,
+      markers,
+      playhead,
+      exportedCount,
+      projectCreatedAt,
+      assets,
+    ]
+  );
+
+  useEffect(() => {
+    if (screenMode !== 'editor') return;
+    const timer = setTimeout(() => {
+      persistCurrentProject();
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [
+    screenMode,
+    clips,
+    tracks,
+    projectTitle,
+    aspectRatio,
+    markers,
+    exportedCount,
+    persistCurrentProject,
+  ]);
+
+  const handleCreateNewProject = useCallback(() => {
+    const fresh = createNewBlankProjectRecord(savedProjects);
+    setSavedProjects((prev) => upsertSavedProject(fresh, prev));
+    setActiveProjectId(fresh.id);
+    setProjectCreatedAt(fresh.createdAt);
+    setProjectTitle(fresh.title);
+    setAspectRatio(fresh.aspectRatio);
+    setTracks(fresh.tracks);
+    setClips([]);
+    setMarkers([]);
+    setPlayhead(0);
+    setSelectedClipId(null);
+    setExportedCount(0);
+    setHistoryPast([]);
+    setHistoryFuture([]);
+    setIsPlaying(false);
+    setScreenMode('editor');
+  }, [savedProjects]);
+
+  const handleOpenProject = useCallback(
+    (projectId: string) => {
+      const target = savedProjects.find((p) => p.id === projectId);
+      if (!target) return;
+      setActiveProjectId(target.id);
+      setProjectCreatedAt(target.createdAt);
+      setProjectTitle(target.title);
+      setAspectRatio(target.aspectRatio);
+      setTracks(target.tracks.length > 0 ? target.tracks : INITIAL_TRACKS);
+      setClips(target.clips);
+      setMarkers(target.markers ?? []);
+      setPlayhead(target.playhead ?? 0);
+      setSelectedClipId(target.clips[0]?.id ?? null);
+      setExportedCount(target.exportedCount ?? 0);
+      setHistoryPast([]);
+      setHistoryFuture([]);
+      setIsPlaying(false);
+      setScreenMode('editor');
+    },
+    [savedProjects]
+  );
+
+  const handleDeleteProject = useCallback((projectId: string) => {
+    setSavedProjects((prev) => deleteSavedProject(projectId, prev));
+  }, []);
+
+  const handleBackToHome = useCallback(() => {
+    setIsPlaying(false);
+    persistCurrentProject();
+    setScreenMode('home');
+  }, [persistCurrentProject]);
+
+  if (screenMode !== 'editor') {
+    return (
+      <>
+        <HomeScreen
+          projects={savedProjects}
+          onCreateNew={handleCreateNewProject}
+          onOpenProject={handleOpenProject}
+          onDeleteProject={handleDeleteProject}
+          onOpenFormats={() => setFormatsModalOpen(true)}
+        />
+        <FormatsModal open={formatsModalOpen} onClose={() => setFormatsModalOpen(false)} />
+        <OfflineIndicator />
+        {screenMode === 'splash' && (
+          <SplashScreen
+            mediaCache={cacheRef.current}
+            onComplete={(bootResult) => {
+              if (bootResult.ambientWavUrl) {
+                setAssets((prev) =>
+                  prev.map((a) =>
+                    a.id === 'asset_score' ? { ...a, src: bootResult.ambientWavUrl } : a
+                  )
+                );
+              }
+              setSavedProjects(loadSavedProjects());
+              setScreenMode('home');
+            }}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <div
@@ -1095,6 +1295,7 @@ export default function App() {
         onRedo={handleRedo}
         onOpenFormats={() => setFormatsModalOpen(true)}
         onOpenExport={() => setExportModalOpen(true)}
+        onBackToHome={handleBackToHome}
       />
 
       {/* Main Studio Workspace */}
@@ -1225,6 +1426,14 @@ export default function App() {
         </button>
         <button
           type="button"
+          onClick={() => openMobileTool('transition')}
+          className="min-h-[44px] min-w-[54px] px-2 flex flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] font-medium text-zinc-200 hover:bg-white/10 shrink-0"
+        >
+          <Sparkles className="w-4 h-4 text-amber-300" />
+          <span>Trans</span>
+        </button>
+        <button
+          type="button"
           onClick={() => {
             setLeftTab('titles');
             setMobileSheet('vault');
@@ -1294,6 +1503,11 @@ export default function App() {
         assets={assets}
         savedGallery={savedGallery}
         onSaveToGallery={(res: ExportResult, adUnitId: string) => {
+          setExportedCount((c) => {
+            const next = c + 1;
+            persistCurrentProject(next);
+            return next;
+          });
           setSavedGallery((prev) => {
             if (prev.some((g) => g.blobUrl === res.blobUrl)) return prev;
             return [

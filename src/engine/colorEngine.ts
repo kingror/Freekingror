@@ -1,10 +1,32 @@
 import type { ChromaKeyConfig, ColorGrade, VfxConfig } from '../types/editor';
 import { clamp } from './timelineMath';
 
+export type LutCategory =
+  | 'Cinema'
+  | 'Film'
+  | 'Vintage'
+  | 'Moody'
+  | 'Vibrant'
+  | 'Portrait'
+  | 'Neon'
+  | 'Mono';
+
+export const LUT_CATEGORIES: ('All' | LutCategory)[] = [
+  'All',
+  'Cinema',
+  'Film',
+  'Vintage',
+  'Moody',
+  'Vibrant',
+  'Portrait',
+  'Neon',
+  'Mono',
+];
+
 export interface LutPreset {
   id: string;
   name: string;
-  category: 'Cinema' | 'Film' | 'Vintage' | 'Mono';
+  category: LutCategory;
   description: string;
   previewGradient: string;
   exposureBias: number;
@@ -98,7 +120,7 @@ export const VFX_LIBRARY: VfxPresetDef[] = [
   },
 ];
 
-export const LUT_PRESETS: LutPreset[] = [
+const CORE_LUT_PRESETS: LutPreset[] = [
   {
     id: 'natural',
     name: 'Rec.709 Natural',
@@ -265,6 +287,162 @@ export const LUT_PRESETS: LutPreset[] = [
     highlightRgb: [0, 0, 0],
   },
 ];
+
+interface CompactLutSpec {
+  id: string;
+  name: string;
+  category: LutCategory;
+  c1: string;
+  c2: string;
+  exp: number;
+  con: number;
+  sat: number;
+  hue: number;
+  temp: number;
+  tint: number;
+  sh: [number, number, number];
+  hi: [number, number, number];
+  desc: string;
+}
+
+const EXPANDED_LUT_SPECS: CompactLutSpec[] = [
+  // Cinema (14)
+  { id: 'cin_imax_epic', name: 'IMAX Epic', category: 'Cinema', c1: '#0c4a6e', c2: '#fb923c', exp: 1, con: 24, sat: 10, hue: -2, temp: 6, tint: -2, sh: [-12, 8, 18], hi: [20, 10, -8], desc: 'Large-format theatrical contrast & rich sky separation.' },
+  { id: 'cin_dune_ochre', name: 'Desert Ochre', category: 'Cinema', c1: '#7c2d12', c2: '#fde047', exp: 4, con: 16, sat: -8, hue: -4, temp: 30, tint: 4, sh: [14, 4, -14], hi: [24, 16, -12], desc: 'Sun-scorched sandstone tones with amber highlights.' },
+  { id: 'cin_arctic_slate', name: 'Arctic Slate', category: 'Cinema', c1: '#0f172a', c2: '#67e8f9', exp: 2, con: 18, sat: -10, hue: -8, temp: -28, tint: -4, sh: [-10, 8, 22], hi: [-4, 14, 20], desc: 'Cool glacier blues with crisp highlight clarity.' },
+  { id: 'cin_emerald_thriller', name: 'Matrix Emerald', category: 'Cinema', c1: '#052e16', c2: '#4ade80', exp: -4, con: 28, sat: -6, hue: 14, temp: -12, tint: -22, sh: [-12, 18, -6], hi: [2, 16, 0], desc: 'Stylized cyber-green midtones & deep obsidian blacks.' },
+  { id: 'cin_blockbuster', name: 'Blockbuster Punch', category: 'Cinema', c1: '#155e75', c2: '#f97316', exp: 0, con: 26, sat: 18, hue: 0, temp: 10, tint: -4, sh: [-16, 8, 20], hi: [24, 10, -14], desc: 'High-impact action grade with bold cyan/orange separation.' },
+  { id: 'cin_anomorphic_blue', name: 'Anamorphic Flare', category: 'Cinema', c1: '#1e1b4b', c2: '#38bdf8', exp: 3, con: 14, sat: 12, hue: -6, temp: -18, tint: 4, sh: [-6, 4, 24], hi: [6, 16, 22], desc: 'Electric blue halation inspired by anamorphic glass.' },
+  { id: 'cin_obsidian_gold', name: 'Obsidian Gold', category: 'Cinema', c1: '#18181b', c2: '#eab308', exp: -2, con: 24, sat: 6, hue: 0, temp: 18, tint: 2, sh: [4, 0, -10], hi: [22, 16, -10], desc: 'Luxury dark shadows paired with warm metallic gold.' },
+  { id: 'cin_nordic_frost', name: 'Nordic Frost', category: 'Cinema', c1: '#1e293b', c2: '#bae6fd', exp: 4, con: 8, sat: -20, hue: -4, temp: -22, tint: 2, sh: [-4, 8, 16], hi: [4, 10, 14], desc: 'Desaturated Scandinavian winter thriller palette.' },
+  { id: 'cin_sunset_crimson', name: 'Crimson Dusk', category: 'Cinema', c1: '#4c0519', c2: '#fb7185', exp: 2, con: 20, sat: 16, hue: 6, temp: 20, tint: 14, sh: [14, -6, 6], hi: [22, 4, 4], desc: 'Velvet crimson twilight with dramatic shadow density.' },
+  { id: 'cin_cobalt_drama', name: 'Cobalt Drama', category: 'Cinema', c1: '#0c192c', c2: '#60a5fa', exp: -3, con: 22, sat: 8, hue: -10, temp: -20, tint: 0, sh: [-8, 4, 22], hi: [4, 12, 18], desc: 'Deep maritime blue shadows with clean neutral whites.' },
+  { id: 'cin_bronze_hero', name: 'Bronze Hero', category: 'Cinema', c1: '#451a03', c2: '#d97706', exp: 1, con: 22, sat: 4, hue: -2, temp: 22, tint: 2, sh: [10, 2, -10], hi: [18, 10, -8], desc: 'Warm metallic bronze tone for epic hero shots.' },
+  { id: 'cin_velvet_violet', name: 'Velvet Violet', category: 'Cinema', c1: '#2e1065', c2: '#c084fc', exp: 0, con: 18, sat: 14, hue: 10, temp: -10, tint: 18, sh: [10, -6, 20], hi: [16, 4, 18], desc: 'Dreamy ultraviolet cast for music videos & night scenes.' },
+  { id: 'cin_skyline_4k', name: 'Skyline 4K', category: 'Cinema', c1: '#0f172a', c2: '#22d3ee', exp: 3, con: 16, sat: 14, hue: -4, temp: -12, tint: -2, sh: [-8, 10, 16], hi: [10, 16, 18], desc: 'Modern architectural sheen with crisp cyan highlights.' },
+  { id: 'cin_solaris_warm', name: 'Solaris Warmth', category: 'Cinema', c1: '#7c2d12', c2: '#fdba74', exp: 5, con: 10, sat: 12, hue: 0, temp: 24, tint: 6, sh: [12, 4, -8], hi: [20, 12, -10], desc: 'Glowing afternoon sun wrap with gentle roll-off.' },
+
+  // Film (14)
+  { id: 'flm_portra400', name: 'Kodak Portra 400', category: 'Film', c1: '#78350f', c2: '#fed7aa', exp: 4, con: 6, sat: -4, hue: 2, temp: 10, tint: 4, sh: [6, 4, -4], hi: [12, 8, -2], desc: 'Renowned natural skin reproduction & soft pastel roll-off.' },
+  { id: 'flm_portra800', name: 'Kodak Portra 800', category: 'Film', c1: '#713f12', c2: '#fde68a', exp: 5, con: 12, sat: 6, hue: 0, temp: 14, tint: 2, sh: [8, 4, -6], hi: [16, 10, -4], desc: 'Warm low-light 35mm emulsion with rich amber grain.' },
+  { id: 'flm_cinestill800t', name: 'CineStill 800T', category: 'Film', c1: '#083344', c2: '#f43f5e', exp: 0, con: 20, sat: 12, hue: -6, temp: -18, tint: 6, sh: [-10, 8, 18], hi: [20, 4, 8], desc: 'Tungsten-balanced night stock with subtle red halation.' },
+  { id: 'flm_cinestill50d', name: 'CineStill 50D', category: 'Film', c1: '#1e3a8a', c2: '#fcd34d', exp: 3, con: 12, sat: 8, hue: 0, temp: 6, tint: 0, sh: [-4, 4, 10], hi: [14, 10, -4], desc: 'Fine-grain daylight motion picture emulsion.' },
+  { id: 'flm_fuji_pro400h', name: 'Fuji Pro 400H', category: 'Film', c1: '#064e3b', c2: '#a7f3d0', exp: 5, con: -4, sat: -8, hue: 6, temp: -6, tint: -10, sh: [-4, 12, 8], hi: [4, 10, 4], desc: 'Airy mint greens and soft wedding-editorial highlights.' },
+  { id: 'flm_velvia50', name: 'Fuji Velvia 50', category: 'Film', c1: '#1d4ed8', c2: '#f43f5e', exp: -2, con: 28, sat: 36, hue: 2, temp: 4, tint: 6, sh: [-6, -2, 12], hi: [14, 6, 4], desc: 'Ultra-vivid slide film saturation for epic landscapes.' },
+  { id: 'flm_provia100', name: 'Fuji Provia 100F', category: 'Film', c1: '#0369a1', c2: '#7dd3fc', exp: 1, con: 14, sat: 14, hue: -2, temp: -4, tint: 0, sh: [-4, 4, 10], hi: [8, 10, 8], desc: 'Balanced transparency stock with punchy blues.' },
+  { id: 'flm_ektar100', name: 'Kodak Ektar 100', category: 'Film', c1: '#991b1b', c2: '#fbbf24', exp: 0, con: 20, sat: 26, hue: 0, temp: 12, tint: 4, sh: [8, -2, -6], hi: [18, 8, -8], desc: 'Rich commercial reds & crisp micro-contrast.' },
+  { id: 'flm_gold200', name: 'Kodak Gold 200', category: 'Film', c1: '#92400e', c2: '#fef08a', exp: 4, con: 8, sat: 10, hue: -2, temp: 22, tint: 2, sh: [10, 6, -10], hi: [18, 14, -8], desc: 'Classic warm consumer 35mm golden nostalgia.' },
+  { id: 'flm_ultramax', name: 'Kodak Ultramax 400', category: 'Film', c1: '#1e40af', c2: '#fb923c', exp: 2, con: 16, sat: 16, hue: 0, temp: 6, tint: 0, sh: [-6, 2, 14], hi: [16, 10, -4], desc: 'Punchy street snapshots with cool shadows & warm sun.' },
+  { id: 'flm_superia400', name: 'Fuji Superia X-Tra', category: 'Film', c1: '#065f46', c2: '#6ee7b7', exp: 2, con: 14, sat: 10, hue: 6, temp: -4, tint: -12, sh: [-6, 12, 6], hi: [8, 12, 2], desc: 'Distinctive emerald-tinted shadows & snappy midtones.' },
+  { id: 'flm_agfa_vista', name: 'Agfa Vista 200', category: 'Film', c1: '#9f1239', c2: '#fdba74', exp: 3, con: 12, sat: 18, hue: 4, temp: 8, tint: 8, sh: [8, -2, 4], hi: [16, 8, -4], desc: 'Rosy warm reds & crisp European daylight contrast.' },
+  { id: 'flm_vision3_500t', name: 'Vision3 500T', category: 'Film', c1: '#1e293b', c2: '#38bdf8', exp: -1, con: 16, sat: 4, hue: -4, temp: -14, tint: -2, sh: [-8, 6, 16], hi: [10, 8, 6], desc: 'Cinema negative curve built for mixed night lighting.' },
+  { id: 'flm_technicolor', name: '2-Strip Technicolor', category: 'Film', c1: '#0f766e', c2: '#ef4444', exp: 2, con: 22, sat: 20, hue: 8, temp: 4, tint: -8, sh: [-14, 14, 10], hi: [24, 4, -8], desc: 'Classic 1930s red-cyan dual-emulsion dye look.' },
+
+  // Vintage (13)
+  { id: 'vin_1960_slide', name: '1960s Kodachrome', category: 'Vintage', c1: '#7f1d1d', c2: '#fcd34d', exp: 2, con: 18, sat: 6, hue: -2, temp: 20, tint: 6, sh: [12, 2, -10], hi: [18, 12, -8], desc: 'Iconic archival magazine print tones.' },
+  { id: 'vin_super8', name: 'Super 8 Home Reel', category: 'Vintage', c1: '#78350f', c2: '#fde68a', exp: 6, con: -6, sat: -18, hue: -4, temp: 26, tint: 4, sh: [16, 10, -8], hi: [18, 14, -6], desc: 'Soft faded home-movie reel with lifted blacks.' },
+  { id: 'vin_polaroid_sx70', name: 'SX-70 Instant', category: 'Vintage', c1: '#1e3a5f', c2: '#fef08a', exp: 7, con: -10, sat: -14, hue: 6, temp: 12, tint: -6, sh: [2, 12, 14], hi: [18, 14, -4], desc: 'Creamy instant-print borders with teal shadow haze.' },
+  { id: 'vin_lomo_lc', name: 'Lomo LC-A Cross', category: 'Vintage', c1: '#047857', c2: '#facc15', exp: 1, con: 24, sat: 22, hue: 10, temp: 6, tint: -16, sh: [-8, 18, 8], hi: [18, 16, -12], desc: 'Cross-processed vibrant greens & golden highlights.' },
+  { id: 'vin_sepia_archival', name: 'Archival Sepia', category: 'Vintage', c1: '#451a03', c2: '#d6d3d1', exp: 2, con: 10, sat: -70, hue: 0, temp: 44, tint: 6, sh: [16, 8, -12], hi: [20, 12, -12], desc: 'Warm antique darkroom sepia toning.' },
+  { id: 'vin_90s_cam', name: '90s Camcorder', category: 'Vintage', c1: '#312e81', c2: '#fde047', exp: 4, con: 6, sat: 12, hue: -6, temp: -6, tint: 10, sh: [6, 4, 14], hi: [12, 10, -4], desc: 'Nostalgic Hi8 video-tape warmth & punch.' },
+  { id: 'vin_retro_cafe', name: 'Retro Espresso', category: 'Vintage', c1: '#431407', c2: '#fdba74', exp: -2, con: 14, sat: -12, hue: -2, temp: 24, tint: 2, sh: [14, 6, -6], hi: [16, 10, -6], desc: 'Rich roasted coffee tones for cozy interiors.' },
+  { id: 'vin_pastel_70s', name: '70s Summer Haze', category: 'Vintage', c1: '#9a3412', c2: '#fbcfe8', exp: 8, con: -14, sat: -10, hue: 4, temp: 20, tint: 10, sh: [14, 6, 4], hi: [18, 12, 4], desc: 'Sun-bleached low-contrast retro summer glow.' },
+  { id: 'vin_faded_denim', name: 'Faded Denim', category: 'Vintage', c1: '#1e3a8a', c2: '#cbd5e1', exp: 5, con: -8, sat: -26, hue: -6, temp: -14, tint: 0, sh: [4, 8, 18], hi: [6, 8, 10], desc: 'Washed-out indigo shadows & matte highlights.' },
+  { id: 'vin_vhs_magenta', name: 'VHS Tape Drift', category: 'Vintage', c1: '#581c87', c2: '#f472b6', exp: 2, con: 10, sat: 8, hue: 12, temp: -4, tint: 18, sh: [14, -4, 16], hi: [18, 4, 12], desc: 'Analog tape chroma shift with rosy highlights.' },
+  { id: 'vin_autumn_postcard', name: 'Autumn Postcard', category: 'Vintage', c1: '#7c2d12', c2: '#fb923c', exp: 3, con: 8, sat: 4, hue: -4, temp: 26, tint: 4, sh: [12, 4, -8], hi: [20, 10, -10], desc: 'Warm russet foliage & soft vintage contrast.' },
+  { id: 'vin_matte_olive', name: 'Matte Olive', category: 'Vintage', c1: '#365314', c2: '#d9f99d', exp: 3, con: -6, sat: -20, hue: 8, temp: 10, tint: -14, sh: [4, 12, -4], hi: [10, 12, -6], desc: 'Muted army olive shadows with soft matte lift.' },
+  { id: 'vin_sun_bleached', name: 'Sun Bleached', category: 'Vintage', c1: '#854d0e', c2: '#fef9c3', exp: 10, con: -16, sat: -28, hue: 0, temp: 22, tint: 2, sh: [14, 12, 2], hi: [18, 16, 4], desc: 'High-key airy vintage wash with chalky blacks.' },
+
+  // Moody (14)
+  { id: 'moo_dark_academia', name: 'Dark Academia', category: 'Moody', c1: '#271a11', c2: '#a16207', exp: -6, con: 20, sat: -22, hue: -2, temp: 14, tint: 2, sh: [8, 2, -6], hi: [12, 8, -4], desc: 'Moody walnut shadows & candlelit amber highlights.' },
+  { id: 'moo_rainforest', name: 'Rainforest Deep', category: 'Moody', c1: '#022c22', c2: '#10b981', exp: -5, con: 22, sat: -8, hue: 6, temp: -10, tint: -14, sh: [-8, 14, 6], hi: [-2, 12, 4], desc: 'Lush deep pine shadows with wet foliage contrast.' },
+  { id: 'moo_storm_cloud', name: 'Storm Cloud', category: 'Moody', c1: '#0f172a', c2: '#64748b', exp: -4, con: 24, sat: -34, hue: -4, temp: -16, tint: -2, sh: [-6, 2, 12], hi: [2, 6, 10], desc: 'Overcast slate drama with heavy midtone grit.' },
+  { id: 'moo_espresso_matte', name: 'Espresso Matte', category: 'Moody', c1: '#1c1917', c2: '#78716c', exp: -3, con: 10, sat: -28, hue: 0, temp: 12, tint: 2, sh: [10, 6, 0], hi: [10, 6, -2], desc: 'Lifted warm charcoal shadows for moody portraits.' },
+  { id: 'moo_midnight_indigo', name: 'Midnight Indigo', category: 'Moody', c1: '#090d24', c2: '#4f46e5', exp: -6, con: 24, sat: 4, hue: -10, temp: -24, tint: 8, sh: [-4, -2, 22], hi: [4, 6, 18], desc: 'Deep nocturnal blue-violet mood.' },
+  { id: 'moo_foggy_coast', name: 'Foggy Coast', category: 'Moody', c1: '#1e293b', c2: '#94a3b8', exp: 2, con: -6, sat: -36, hue: -2, temp: -12, tint: 0, sh: [-2, 4, 10], hi: [4, 6, 8], desc: 'Soft misty ocean horizon with muted slate.' },
+  { id: 'moo_ember_shadow', name: 'Ember Shadow', category: 'Moody', c1: '#1f1209', c2: '#ea580c', exp: -5, con: 26, sat: 4, hue: -2, temp: 18, tint: 4, sh: [8, 0, -8], hi: [22, 8, -10], desc: 'Dark shadowy frame lit by glowing ember accents.' },
+  { id: 'moo_forest_mist', name: 'Forest Mist', category: 'Moody', c1: '#14532d', c2: '#9ca3af', exp: 1, con: 4, sat: -26, hue: 4, temp: -8, tint: -10, sh: [-4, 10, 4], hi: [4, 8, 4], desc: 'Soft misty evergreen tones with calm contrast.' },
+  { id: 'moo_charcoal_cyan', name: 'Charcoal Cyan', category: 'Moody', c1: '#090d16', c2: '#06b6d4', exp: -4, con: 24, sat: -10, hue: -6, temp: -18, tint: -6, sh: [-10, 8, 16], hi: [0, 12, 16], desc: 'Matte graphite blacks with cool cyan accents.' },
+  { id: 'moo_wine_cellar', name: 'Burgundy Mood', category: 'Moody', c1: '#3b0764', c2: '#be123c', exp: -5, con: 22, sat: -6, hue: 8, temp: 10, tint: 16, sh: [14, -6, 6], hi: [16, 2, 6], desc: 'Rich merlot shadows for moody indoor scenes.' },
+  { id: 'moo_wet_asphalt', name: 'Wet Asphalt', category: 'Moody', c1: '#09090b', c2: '#3f3f46', exp: -4, con: 28, sat: -32, hue: 0, temp: -10, tint: 0, sh: [-4, 0, 8], hi: [4, 6, 8], desc: 'Street-level rainy pavement contrast.' },
+  { id: 'moo_moss_stone', name: 'Moss & Stone', category: 'Moody', c1: '#1a2e05', c2: '#71717a', exp: -2, con: 14, sat: -22, hue: 6, temp: 2, tint: -10, sh: [0, 10, -2], hi: [6, 8, 2], desc: 'Earthy moss greens balanced against cool stone.' },
+  { id: 'moo_dusk_obsidian', name: 'Dusk Obsidian', category: 'Moody', c1: '#0c0a09', c2: '#57534e', exp: -6, con: 24, sat: -20, hue: 0, temp: 4, tint: 2, sh: [4, 2, 0], hi: [8, 6, 2], desc: 'Minimalist dark obsidian contrast with subtle warmth.' },
+  { id: 'moo_cold_harbor', name: 'Cold Harbor', category: 'Moody', c1: '#0c4a6e', c2: '#64748b', exp: -3, con: 18, sat: -24, hue: -6, temp: -22, tint: -4, sh: [-8, 4, 16], hi: [0, 6, 12], desc: 'Steely industrial harbor blues.' },
+
+  // Vibrant (14)
+  { id: 'vib_tropical_punch', name: 'Tropical Punch', category: 'Vibrant', c1: '#0284c7', c2: '#facc15', exp: 5, con: 16, sat: 34, hue: 0, temp: 8, tint: -4, sh: [-6, 10, 12], hi: [18, 14, -6], desc: 'Bright resort turquoise waters & sunny golden sand.' },
+  { id: 'vib_summer_pop', name: 'Summer Pop', category: 'Vibrant', c1: '#ec4899', c2: '#f59e0b', exp: 6, con: 14, sat: 32, hue: 2, temp: 12, tint: 6, sh: [8, 0, 8], hi: [20, 12, -4], desc: 'Energetic lifestyle pop for travel vlogs.' },
+  { id: 'vib_emerald_bloom', name: 'Emerald Bloom', category: 'Vibrant', c1: '#059669', c2: '#a3e635', exp: 4, con: 14, sat: 28, hue: 6, temp: 2, tint: -10, sh: [-6, 14, 2], hi: [10, 18, -4], desc: 'Lush botanical greens with sunlit sparkle.' },
+  { id: 'vib_citrus_zing', name: 'Citrus Zing', category: 'Vibrant', c1: '#ea580c', c2: '#fde047', exp: 6, con: 12, sat: 30, hue: -4, temp: 18, tint: 0, sh: [8, 4, -8], hi: [22, 16, -10], desc: 'Zesty tangerine and lemon radiance.' },
+  { id: 'vib_azure_coast', name: 'Azure Coast', category: 'Vibrant', c1: '#0369a1', c2: '#22d3ee', exp: 4, con: 16, sat: 28, hue: -4, temp: -12, tint: -4, sh: [-10, 8, 20], hi: [4, 16, 20], desc: 'Crystal-clear Mediterranean blue saturation.' },
+  { id: 'vib_berry_crush', name: 'Berry Crush', category: 'Vibrant', c1: '#9d174d', c2: '#fb7185', exp: 3, con: 18, sat: 30, hue: 8, temp: 6, tint: 16, sh: [12, -6, 10], hi: [20, 4, 10], desc: 'Rich raspberry & rose highlights.' },
+  { id: 'vib_festival_day', name: 'Festival Daylight', category: 'Vibrant', c1: '#7c3aed', c2: '#f43f5e', exp: 5, con: 18, sat: 36, hue: 4, temp: 8, tint: 8, sh: [8, -2, 16], hi: [18, 8, 6], desc: 'High-energy music festival daylight color pop.' },
+  { id: 'vib_candy_sky', name: 'Candy Sky', category: 'Vibrant', c1: '#38bdf8', c2: '#f472b6', exp: 7, con: 8, sat: 26, hue: 4, temp: -2, tint: 14, sh: [4, 6, 16], hi: [18, 10, 14], desc: 'Cotton-candy sunset skies & airy brightness.' },
+  { id: 'vib_vivid_hdr', name: 'Vivid HDR Boost', category: 'Vibrant', c1: '#1d4ed8', c2: '#22c55e', exp: 3, con: 26, sat: 34, hue: 0, temp: 0, tint: 0, sh: [-4, 2, 6], hi: [12, 12, 12], desc: 'Crisp micro-contrast & punchy dynamic range.' },
+  { id: 'vib_coral_reef', name: 'Coral Reef', category: 'Vibrant', c1: '#0d9488', c2: '#fb7185', exp: 4, con: 14, sat: 30, hue: 2, temp: 6, tint: 6, sh: [-8, 14, 12], hi: [22, 8, 6], desc: 'Teal ocean depth paired with coral pink highlights.' },
+  { id: 'vib_spring_meadow', name: 'Spring Meadow', category: 'Vibrant', c1: '#16a34a', c2: '#fde047', exp: 6, con: 10, sat: 24, hue: 4, temp: 10, tint: -8, sh: [-4, 12, 0], hi: [14, 16, -6], desc: 'Fresh morning greens and warm sunlight.' },
+  { id: 'vib_mango_sunset', name: 'Mango Sunset', category: 'Vibrant', c1: '#c2410c', c2: '#facc15', exp: 4, con: 16, sat: 32, hue: -2, temp: 26, tint: 4, sh: [12, 2, -10], hi: [24, 14, -12], desc: 'Juicy sunset amber & deep crimson warmth.' },
+  { id: 'vib_electric_teal', name: 'Electric Teal', category: 'Vibrant', c1: '#0f766e', c2: '#2dd4bf', exp: 3, con: 18, sat: 28, hue: -6, temp: -14, tint: -10, sh: [-12, 14, 16], hi: [0, 18, 16], desc: 'Saturated modern aqua teal tones.' },
+  { id: 'vib_ruby_spark', name: 'Ruby Spark', category: 'Vibrant', c1: '#991b1b', c2: '#f97316', exp: 2, con: 20, sat: 30, hue: 2, temp: 14, tint: 8, sh: [12, -4, -4], hi: [22, 8, -4], desc: 'Fiery red-orange brilliance for sports & action.' },
+
+  // Portrait (12)
+  { id: 'por_peach_glow', name: 'Peach Glow', category: 'Portrait', c1: '#9a3412', c2: '#fed7aa', exp: 6, con: 4, sat: 6, hue: 2, temp: 14, tint: 6, sh: [8, 4, -2], hi: [16, 10, 0], desc: 'Flattering warm peach skin radiance.' },
+  { id: 'por_clean_beauty', name: 'Clean Studio Beauty', category: 'Portrait', c1: '#475569', c2: '#f8fafc', exp: 7, con: 6, sat: -4, hue: 0, temp: 4, tint: 2, sh: [2, 2, 4], hi: [8, 8, 8], desc: 'Neutral high-clarity commercial beauty lighting.' },
+  { id: 'por_honey_skin', name: 'Honey Bronzer', category: 'Portrait', c1: '#78350f', c2: '#fde68a', exp: 4, con: 10, sat: 8, hue: -2, temp: 20, tint: 2, sh: [10, 4, -6], hi: [18, 12, -6], desc: 'Sun-kissed golden skin glow.' },
+  { id: 'por_porcelain', name: 'Porcelain Cool', category: 'Portrait', c1: '#334155', c2: '#e0f2fe', exp: 7, con: 2, sat: -10, hue: -2, temp: -10, tint: 4, sh: [0, 4, 10], hi: [6, 8, 10], desc: 'Luminous cool-toned editorial fashion skin.' },
+  { id: 'por_rose_velvet', name: 'Rose Velvet', category: 'Portrait', c1: '#881337', c2: '#fecdd3', exp: 5, con: 6, sat: 4, hue: 4, temp: 8, tint: 12, sh: [10, 0, 6], hi: [16, 6, 8], desc: 'Soft rosy cheeks & romantic matte highlights.' },
+  { id: 'por_editorial_warm', name: 'Editorial Warm', category: 'Portrait', c1: '#57534e', c2: '#fde68a', exp: 4, con: 12, sat: -8, hue: 0, temp: 14, tint: 2, sh: [8, 4, -2], hi: [14, 10, -2], desc: 'Magazine cover warmth with natural shadow depth.' },
+  { id: 'por_creamy_matte', name: 'Creamy Matte', category: 'Portrait', c1: '#44403c', c2: '#f5f5f4', exp: 6, con: -8, sat: -12, hue: 0, temp: 8, tint: 2, sh: [8, 6, 4], hi: [10, 8, 4], desc: 'Silky lifted shadows for soft daylight portraits.' },
+  { id: 'por_golden_silk', name: 'Golden Silk', category: 'Portrait', c1: '#854d0e', c2: '#fef08a', exp: 5, con: 8, sat: 10, hue: 0, temp: 18, tint: 2, sh: [10, 6, -4], hi: [16, 12, -4], desc: 'Warm backlit hair-light shimmer.' },
+  { id: 'por_mocha_tone', name: 'Mocha Richness', category: 'Portrait', c1: '#292524', c2: '#d6d3d1', exp: 2, con: 14, sat: -6, hue: 0, temp: 12, tint: 2, sh: [10, 4, -2], hi: [12, 8, 0], desc: 'Deep flattering contrast for rich skin tones.' },
+  { id: 'por_soft_ivory', name: 'Soft Ivory', category: 'Portrait', c1: '#64748b', c2: '#fefce8', exp: 8, con: -4, sat: -14, hue: 2, temp: 8, tint: 0, sh: [6, 6, 4], hi: [10, 10, 6], desc: 'Airy bridal ivory brightness.' },
+  { id: 'por_studio_crisp', name: 'Studio Crisp', category: 'Portrait', c1: '#1e293b', c2: '#e2e8f0', exp: 3, con: 18, sat: 2, hue: 0, temp: 0, tint: 0, sh: [-2, 0, 4], hi: [8, 8, 8], desc: 'Sharp talking-head YouTube studio look.' },
+  { id: 'por_champagne', name: 'Champagne Tint', category: 'Portrait', c1: '#713f12', c2: '#fef3c7', exp: 5, con: 6, sat: -6, hue: 2, temp: 14, tint: 4, sh: [8, 6, 0], hi: [16, 12, 2], desc: 'Refined champagne highlight sheen.' },
+
+  // Neon (11)
+  { id: 'neo_cyberpunk_2099', name: 'Cyberpunk 2099', category: 'Neon', c1: '#0284c7', c2: '#ec4899', exp: 0, con: 26, sat: 30, hue: -8, temp: -16, tint: 20, sh: [-8, 12, 26], hi: [26, 0, 22], desc: 'Electric cyan shadows & hot magenta neon lights.' },
+  { id: 'neo_tokyo_rain', name: 'Tokyo Rain Neon', category: 'Neon', c1: '#0f172a', c2: '#22d3ee', exp: -2, con: 28, sat: 24, hue: -10, temp: -22, tint: 10, sh: [-10, 10, 24], hi: [8, 18, 26], desc: 'Wet Shinjuku night reflections in vivid cyan.' },
+  { id: 'neo_synthwave', name: 'Synthwave 84', category: 'Neon', c1: '#4c1d95', c2: '#f43f5e', exp: 2, con: 22, sat: 28, hue: 14, temp: -8, tint: 26, sh: [12, -8, 26], hi: [26, 4, 18], desc: 'Retro-futuristic purple & sunset laser grid.' },
+  { id: 'neo_acid_lime', name: 'Acid Lime', category: 'Neon', c1: '#064e3b', c2: '#bef264', exp: 2, con: 24, sat: 26, hue: 18, temp: -4, tint: -24, sh: [-10, 18, 4], hi: [14, 24, -6], desc: 'Hyper-electric toxic lime rave energy.' },
+  { id: 'neo_ultraviolet', name: 'Ultraviolet Club', category: 'Neon', c1: '#1e1b4b', c2: '#a855f7', exp: -2, con: 24, sat: 26, hue: 16, temp: -18, tint: 24, sh: [8, -6, 26], hi: [18, 6, 26], desc: 'Blacklight club violet with glowing highlights.' },
+  { id: 'neo_laser_red', name: 'Laser Crimson', category: 'Neon', c1: '#18181b', c2: '#ef4444', exp: -3, con: 28, sat: 24, hue: 4, temp: 12, tint: 12, sh: [12, -8, -4], hi: [28, 0, 4], desc: 'Bold scarlet stage laser look.' },
+  { id: 'neo_arcade_blue', name: 'Arcade Electric', category: 'Neon', c1: '#0c4a6e', c2: '#38bdf8', exp: 1, con: 24, sat: 28, hue: -12, temp: -26, tint: -4, sh: [-12, 8, 28], hi: [6, 20, 28], desc: 'High-voltage arcade cobalt & ice blue.' },
+  { id: 'neo_miami_vice', name: 'Miami Night', category: 'Neon', c1: '#0d9488', c2: '#fb7185', exp: 3, con: 20, sat: 28, hue: 2, temp: -6, tint: 14, sh: [-12, 16, 18], hi: [24, 6, 16], desc: '80s pastel-neon aqua & flamingo pink.' },
+  { id: 'neo_plasma_orange', name: 'Plasma Orange', category: 'Neon', c1: '#312e81', c2: '#fb923c', exp: 1, con: 24, sat: 26, hue: -4, temp: 16, tint: 6, sh: [-6, -2, 22], hi: [28, 12, -10], desc: 'Deep indigo shadow with burning neon orange.' },
+  { id: 'neo_hologram', name: 'Prism Hologram', category: 'Neon', c1: '#06b6d4', c2: '#c084fc', exp: 4, con: 16, sat: 24, hue: 24, temp: -12, tint: 14, sh: [-8, 14, 22], hi: [20, 10, 24], desc: 'Iridescent prism hue-shift sheen.' },
+  { id: 'neo_midnight_arcade', name: 'Midnight Tron', category: 'Neon', c1: '#020617', c2: '#00f2fe', exp: -4, con: 32, sat: 20, hue: -8, temp: -24, tint: -6, sh: [-12, 10, 24], hi: [4, 22, 26], desc: 'Razor-sharp black contrast with glowing cyan edges.' },
+
+  // Mono (10)
+  { id: 'mon_ansel_adams', name: 'Ansel Zone B&W', category: 'Mono', c1: '#09090b', c2: '#f4f4f5', exp: 0, con: 34, sat: -100, hue: 0, temp: 0, tint: 0, sh: [-4, -4, -4], hi: [8, 8, 8], desc: 'Deepest Zone I blacks & luminous Zone IX whites.' },
+  { id: 'mon_ilford_hp5', name: 'Ilford HP5 Classic', category: 'Mono', c1: '#18181b', c2: '#d4d4d8', exp: 3, con: 14, sat: -100, hue: 0, temp: 0, tint: 0, sh: [4, 4, 4], hi: [2, 2, 2], desc: 'Forgiving documentary 400-speed monochrome.' },
+  { id: 'mon_kodak_trix', name: 'Kodak Tri-X 400', category: 'Mono', c1: '#09090b', c2: '#e4e4e7', exp: -1, con: 28, sat: -100, hue: 0, temp: 0, tint: 0, sh: [-2, -2, -2], hi: [6, 6, 6], desc: 'Punchy photojournalism grain & crisp shadows.' },
+  { id: 'mon_platinum_print', name: 'Platinum Print', category: 'Mono', c1: '#292524', c2: '#f5f5f4', exp: 4, con: 8, sat: -100, hue: 0, temp: 8, tint: 0, sh: [6, 5, 3], hi: [6, 5, 3], desc: 'Subtle warm silver-platinum darkroom glow.' },
+  { id: 'mon_selenium_tone', name: 'Selenium Cool B&W', category: 'Mono', c1: '#0f172a', c2: '#e2e8f0', exp: 1, con: 20, sat: -100, hue: 0, temp: -10, tint: 2, sh: [0, 0, 6], hi: [4, 4, 8], desc: 'Archival eggplant-slate cool monochrome split.' },
+  { id: 'mon_cyanotype', name: 'Prussian Cyanotype', category: 'Mono', c1: '#0c4a6e', c2: '#e0f2fe', exp: 2, con: 18, sat: -75, hue: -8, temp: -30, tint: -4, sh: [-10, 6, 22], hi: [2, 12, 20], desc: 'Historic Prussian blueprint monochrome.' },
+  { id: 'mon_soft_charcoal', name: 'Soft Charcoal', category: 'Mono', c1: '#27272a', c2: '#a1a1aa', exp: 4, con: -6, sat: -100, hue: 0, temp: 0, tint: 0, sh: [8, 8, 8], hi: [-2, -2, -2], desc: 'Lifted matte charcoal grayscale.' },
+  { id: 'mon_high_key_white', name: 'High-Key Fashion', category: 'Mono', c1: '#52525b', c2: '#ffffff', exp: 10, con: 16, sat: -100, hue: 0, temp: 0, tint: 0, sh: [4, 4, 4], hi: [12, 12, 12], desc: 'Bright airy studio fashion monochrome.' },
+  { id: 'mon_graphite_edge', name: 'Graphite Edge', category: 'Mono', c1: '#18181b', c2: '#71717a', exp: -3, con: 24, sat: -100, hue: 0, temp: -4, tint: 0, sh: [-2, -2, 0], hi: [4, 4, 4], desc: 'Architectural steel-gray monochrome.' },
+  { id: 'mon_warm_silver', name: 'Warm Silver Nitrate', category: 'Mono', c1: '#44403c', c2: '#fef3c7', exp: 2, con: 16, sat: -92, hue: 0, temp: 16, tint: 2, sh: [8, 4, -2], hi: [12, 8, 0], desc: 'Classic warm wet-plate silver tint.' },
+  { id: 'mon_noir_silhouette', name: 'Noir Silhouette', category: 'Mono', c1: '#000000', c2: '#d4d4d8', exp: -6, con: 44, sat: -100, hue: 0, temp: 0, tint: 0, sh: [-8, -8, -8], hi: [10, 10, 10], desc: 'Extreme graphic black-and-white contrast.' },
+];
+
+const EXPANDED_LUT_PRESETS: LutPreset[] = EXPANDED_LUT_SPECS.map((s) => ({
+  id: s.id,
+  name: s.name,
+  category: s.category,
+  description: s.desc,
+  previewGradient: `linear-gradient(135deg, ${s.c1}, ${s.c2})`,
+  exposureBias: s.exp,
+  contrastBias: s.con,
+  saturationBias: s.sat,
+  hueBias: s.hue,
+  temperatureBias: s.temp,
+  tintBias: s.tint,
+  shadowRgb: s.sh,
+  highlightRgb: s.hi,
+}));
+
+export const LUT_PRESETS: LutPreset[] = [...CORE_LUT_PRESETS, ...EXPANDED_LUT_PRESETS];
 
 export function getLutPreset(lutId: string): LutPreset {
   return LUT_PRESETS.find((l) => l.id === lutId) ?? LUT_PRESETS[0];
