@@ -1,0 +1,8 @@
+{
+  "name": "KineForge Studio",
+  "description": "Android-first multi-format non-linear video editor with multi-track timeline, color grading LUTs, chroma key, keyframes, audio EQ, and export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
