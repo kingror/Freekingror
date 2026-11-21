@@ -1,5 +1,5 @@
-import React, { useCallback, useRef, useState } from 'react';
-import { Download, Film, FolderOpen, Loader2, Share2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Download, Film, FolderOpen, Loader2, Share2, X, Zap } from 'lucide-react';
 import type {
   AspectRatio,
   ExportFormat,
@@ -16,6 +16,11 @@ import {
   renderProjectExport,
   type ExportResult,
 } from '../engine/exporter';
+import {
+  SOCIAL_EXPORT_PRESETS,
+  findMatchingSocialPresetId,
+  type SocialExportPreset,
+} from '../engine/exportPresets';
 import { getProjectDuration } from '../engine/timelineMath';
 import {
   consumeAdFreePassExport,
@@ -27,6 +32,8 @@ import {
 import { GoogleVideoAdGate } from './GoogleVideoAdGate';
 import { GalleryExportSuccessView } from './GalleryExportSuccessView';
 
+const EXPORT_ASPECT_RATIOS: AspectRatio[] = ['16:9', '9:16', '1:1', '4:5', '21:9'];
+
 interface ExportModalProps {
   open: boolean;
   onClose: () => void;
@@ -36,7 +43,11 @@ interface ExportModalProps {
   tracks: TimelineTrack[];
   assets: MediaAsset[];
   savedGallery: SavedGalleryItem[];
-  onSaveToGallery: (result: ExportResult, adUnitId: string) => void;
+  onSaveToGallery: (
+    result: ExportResult,
+    adUnitId: string,
+    renderedAspectRatio?: AspectRatio
+  ) => void;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -51,6 +62,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   onSaveToGallery,
 }) => {
   const [activeView, setActiveView] = useState<'export' | 'gallery'>('export');
+  const [exportAspectRatio, setExportAspectRatio] = useState<AspectRatio>(aspectRatio);
   const [settings, setSettings] = useState<ExportSettings>({
     format: 'mp4',
     resolution: '1080p',
@@ -67,6 +79,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [errorMsg, setErrorMsg] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
+  useEffect(() => {
+    if (open) {
+      setExportAspectRatio(aspectRatio);
+    }
+  }, [open, aspectRatio]);
+
   const handleAdUnlock = useCallback((adUnitId: string, passLabel?: string) => {
     setVerifiedAdUnitId(adUnitId);
     setAdUnlocked(true);
@@ -79,8 +97,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const estMB = estimateExportSizeMB(durationSec, settings.bitrateMbps, settings.format);
   const capabilities = getRealExportCapabilities(settings.format);
   const livePass = getAdPassStatus();
+  const activePresetId = findMatchingSocialPresetId(exportAspectRatio, settings);
 
-  const handleStartExport = async () => {
+  const handleStartExport = async (
+    overrideSettings?: ExportSettings,
+    overrideAspectRatio?: AspectRatio
+  ) => {
+    const activeSettings = overrideSettings ?? settings;
+    const activeAr = overrideAspectRatio ?? exportAspectRatio;
+    if (overrideSettings) setSettings(overrideSettings);
+    if (overrideAspectRatio) setExportAspectRatio(overrideAspectRatio);
+
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -108,8 +135,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         clips,
         tracks,
         assets,
-        aspectRatio,
-        settings,
+        aspectRatio: activeAr,
+        settings: activeSettings,
         projectTitle,
         onProgress: setProgress,
         signal: ctrl.signal,
@@ -123,6 +150,20 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         setErrorMsg((err as Error).message || 'Export failed');
         setStatus('error');
       }
+    }
+  };
+
+  const applySocialPreset = (preset: SocialExportPreset, renderImmediately: boolean) => {
+    const nextSettings: ExportSettings = {
+      format: preset.format,
+      resolution: preset.resolution,
+      fps: preset.fps,
+      bitrateMbps: preset.bitrateMbps,
+    };
+    setExportAspectRatio(preset.aspectRatio);
+    setSettings(nextSettings);
+    if (renderImmediately) {
+      void handleStartExport(nextSettings, preset.aspectRatio);
     }
   };
 
@@ -173,8 +214,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <Film className="w-5 h-5 text-amber-400 shrink-0" />
             <div className="min-w-0">
               <h2 className="text-base font-semibold text-white truncate">Export & Gallery Studio</h2>
-              <p className="text-[11px] font-mono-tabular text-zinc-400">
-                {aspectRatio} · {durationSec.toFixed(1)}s · Est. {estMB} MB
+              <p
+                data-testid="export-modal-summary"
+                className="text-[11px] font-mono-tabular text-zinc-400"
+              >
+                {exportAspectRatio} · {durationSec.toFixed(1)}s · Est. {estMB} MB
               </p>
             </div>
           </div>
@@ -289,6 +333,95 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
           ) : (
             <>
+              {/* One-Tap Social Media & Codec Presets */}
+              <div className="space-y-2" data-testid="export-social-presets">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-zinc-300">
+                    Social Media & Codec Presets
+                  </span>
+                  <span className="text-[10px] font-mono-tabular text-amber-300/90">
+                    Tap preset or quick-render
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {SOCIAL_EXPORT_PRESETS.map((preset) => {
+                    const isActive = activePresetId === preset.id;
+                    return (
+                      <div
+                        key={preset.id}
+                        role="group"
+                        aria-label={`${preset.label} preset`}
+                        className={`rounded-xl border transition-colors flex flex-col justify-between p-2 gap-1.5 ${
+                          isActive
+                            ? 'border-amber-400 bg-amber-500/15'
+                            : 'border-white/10 bg-[#161A24] hover:border-white/25'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          disabled={status === 'rendering'}
+                          data-testid={`export-preset-${preset.id}`}
+                          aria-pressed={isActive}
+                          onClick={() => applySocialPreset(preset, false)}
+                          className="text-left focus:outline-none disabled:opacity-50"
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-xs font-semibold text-white truncate">
+                              {preset.label}
+                            </span>
+                            <span className="text-[10px] font-mono-tabular text-amber-300 shrink-0">
+                              {preset.aspectRatio}
+                            </span>
+                          </div>
+                          <p className="text-[10px] font-mono-tabular text-zinc-400 mt-0.5 truncate">
+                            {preset.codecBadge}
+                          </p>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={status === 'rendering'}
+                          data-testid={`export-preset-render-${preset.id}`}
+                          aria-label={`One-tap render ${preset.label}`}
+                          onClick={() => applySocialPreset(preset, true)}
+                          className="w-full min-h-[28px] rounded-md bg-amber-500/20 border border-amber-400/40 text-amber-200 hover:bg-amber-500 hover:text-zinc-950 text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors disabled:opacity-45"
+                        >
+                          <Zap className="w-3 h-3" />
+                          <span>Render</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Aspect Ratio Quick Selector */}
+              {settings.format !== 'wav' && (
+                <div className="space-y-1.5">
+                  <span className="text-xs font-medium text-zinc-300 block">
+                    Export Aspect Ratio
+                  </span>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {EXPORT_ASPECT_RATIOS.map((ar) => (
+                      <button
+                        key={ar}
+                        type="button"
+                        disabled={status === 'rendering'}
+                        data-testid={`export-ar-${ar.replace(':', 'x')}`}
+                        aria-pressed={exportAspectRatio === ar}
+                        onClick={() => setExportAspectRatio(ar)}
+                        className={`min-h-[34px] rounded-lg border text-xs font-mono-tabular font-semibold transition-colors ${
+                          exportAspectRatio === ar
+                            ? 'border-amber-500 bg-amber-500/20 text-amber-300'
+                            : 'border-white/10 bg-[#161A24] text-zinc-300 hover:bg-[#1E2330]'
+                        }`}
+                      >
+                        {ar}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Format */}
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-zinc-300 block">Container Format</span>
@@ -444,7 +577,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     result={result}
                     projectTitle={projectTitle}
                     verifiedAdUnitId={verifiedAdUnitId}
-                    onSavedToGallery={onSaveToGallery}
+                    onSavedToGallery={(res, adId) => onSaveToGallery(res, adId, exportAspectRatio)}
                   />
                 </div>
               )}
@@ -467,7 +600,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 ) : (
                   <button
                     type="button"
-                    onClick={handleStartExport}
+                    onClick={() => void handleStartExport()}
                     className="w-full min-h-[44px] rounded-xl bg-amber-500 text-sm font-semibold text-zinc-950 hover:bg-amber-400 active:scale-[0.99] transition-all"
                   >
                     {status === 'done' ? 'Render New Version' : 'Render & Export'}

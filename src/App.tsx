@@ -103,6 +103,10 @@ import {
   generateMediaProxyAsync,
   shouldGenerateProxy,
 } from './engine/proxyGenerator';
+import {
+  deleteSelectedClips,
+  moveSelectedClipsGroup,
+} from './engine/timelineSelection';
 
 interface EditorSnapshot {
   clips: TimelineClip[];
@@ -149,6 +153,11 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(
     () => savedProjects[0]?.clips?.[0]?.id ?? 'clip_v1_alpine'
   );
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>(() =>
+    savedProjects[0]?.clips?.[0]?.id
+      ? [savedProjects[0].clips[0].id]
+      : ['clip_v1_alpine']
+  );
 
   const [historyPast, setHistoryPast] = useState<EditorSnapshot[]>([]);
   const [historyFuture, setHistoryFuture] = useState<EditorSnapshot[]>([]);
@@ -168,6 +177,7 @@ export default function App() {
   const [clipboardClip, setClipboardClip] = useState<TimelineClip | null>(null);
   const [zoomPxPerSec, setZoomPxPerSec] = useState(64);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [gridSnapEnabled, setGridSnapEnabled] = useState(true);
   const [rippleEnabled, setRippleEnabled] = useState(true);
   const [isNormalizingAudio, setIsNormalizingAudio] = useState(false);
   const [normalizeStatusMessage, setNormalizeStatusMessage] = useState<string | null>(null);
@@ -273,6 +283,17 @@ export default function App() {
     activeSeamId,
   ]);
 
+  const selectSingleClip = useCallback((id: string | null) => {
+    setSelectedClipId(id);
+    setSelectedClipIds(id ? [id] : []);
+  }, []);
+
+  const handleSelectClips = useCallback((ids: string[], primaryId: string | null) => {
+    setSelectedClipIds(ids);
+    setSelectedClipId(primaryId);
+    setNormalizeStatusMessage(null);
+  }, []);
+
   const commitMutation = useCallback(
     (nextClips: TimelineClip[], nextTracks: TimelineTrack[] = tracks) => {
       setHistoryPast((prev) => [...prev.slice(-29), { clips, tracks }]);
@@ -290,6 +311,15 @@ export default function App() {
     setHistoryPast((p) => p.slice(0, -1));
     setClips(prev.clips);
     setTracks(prev.tracks);
+    const validIds = new Set(prev.clips.map((c) => c.id));
+    setSelectedClipIds((ids) => {
+      const kept = ids.filter((id) => validIds.has(id));
+      if (kept.length > 0) return kept;
+      return prev.clips[0]?.id ? [prev.clips[0].id] : [];
+    });
+    setSelectedClipId((curr) =>
+      curr && validIds.has(curr) ? curr : prev.clips[0]?.id ?? null
+    );
   }, [historyPast, clips, tracks]);
 
   const handleRedo = useCallback(() => {
@@ -299,6 +329,15 @@ export default function App() {
     setHistoryFuture((f) => f.slice(1));
     setClips(next.clips);
     setTracks(next.tracks);
+    const validIds = new Set(next.clips.map((c) => c.id));
+    setSelectedClipIds((ids) => {
+      const kept = ids.filter((id) => validIds.has(id));
+      if (kept.length > 0) return kept;
+      return next.clips[0]?.id ? [next.clips[0].id] : [];
+    });
+    setSelectedClipId((curr) =>
+      curr && validIds.has(curr) ? curr : next.clips[0]?.id ?? null
+    );
   }, [historyFuture, clips, tracks]);
 
   useEffect(() => {
@@ -376,17 +415,17 @@ export default function App() {
     const [left, right] = splitResult;
     const nextClips = clips.flatMap((c) => (c.id === candidate.id ? [left, right] : [c]));
     commitMutation(nextClips);
-    setSelectedClipId(right.id);
-  }, [clips, selectedClipId, playhead, commitMutation]);
+    selectSingleClip(right.id);
+  }, [clips, selectedClipId, playhead, commitMutation, selectSingleClip]);
 
   const handleDeleteClip = useCallback(() => {
-    if (!selectedClipId) return;
-    const next = rippleEnabled
-      ? rippleDeleteClip(clips, selectedClipId)
-      : clips.filter((c) => c.id !== selectedClipId);
+    const idsToDelete =
+      selectedClipIds.length > 0 ? selectedClipIds : selectedClipId ? [selectedClipId] : [];
+    if (idsToDelete.length === 0) return;
+    const next = deleteSelectedClips(clips, idsToDelete, rippleEnabled);
     commitMutation(next);
-    setSelectedClipId(next[0]?.id ?? null);
-  }, [clips, selectedClipId, rippleEnabled, commitMutation]);
+    selectSingleClip(next[0]?.id ?? null);
+  }, [clips, selectedClipId, selectedClipIds, rippleEnabled, commitMutation, selectSingleClip]);
 
   const handleAddMarker = useCallback(() => {
     const t = Number(playhead.toFixed(2));
@@ -501,7 +540,7 @@ export default function App() {
         setPlaybackRate(0.5);
         setIsPlaying(true);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedClipId) {
+        if (selectedClipIds.length > 0 || selectedClipId) {
           e.preventDefault();
           handleDeleteClip();
         }
@@ -512,6 +551,7 @@ export default function App() {
   }, [
     totalDuration,
     selectedClipId,
+    selectedClipIds,
     selectedClip,
     clipboardClip,
     clips,
@@ -1363,6 +1403,25 @@ export default function App() {
     [tracks]
   );
 
+  const handleMoveSelectedClips = useCallback(
+    (
+      anchorClipId: string,
+      targetAnchorStart: number,
+      origStartsById: Record<string, number>
+    ) => {
+      setClips((prev) =>
+        moveSelectedClipsGroup({
+          clips: prev,
+          selectedIds: Object.keys(origStartsById),
+          anchorClipId,
+          targetAnchorStart,
+          origStartsById,
+        })
+      );
+    },
+    []
+  );
+
   const handleTrimClip = useCallback(
     (clipId: string, newStart: number, newDur: number, newOffset: number) => {
       setClips((prev) =>
@@ -1756,7 +1815,7 @@ export default function App() {
     setClips([]);
     setMarkers([]);
     setPlayhead(0);
-    setSelectedClipId(null);
+    selectSingleClip(null);
     setExportedCount(0);
     setHistoryPast([]);
     setHistoryFuture([]);
@@ -1767,7 +1826,7 @@ export default function App() {
     setAutoSaveState('saved');
     skipNextSavePulseRef.current = true;
     setScreenMode('editor');
-  }, [savedProjects]);
+  }, [savedProjects, selectSingleClip]);
 
   const handleOpenProject = useCallback(
     (projectId: string) => {
@@ -1781,7 +1840,7 @@ export default function App() {
       setClips(target.clips);
       setMarkers(target.markers ?? []);
       setPlayhead(target.playhead ?? 0);
-      setSelectedClipId(target.clips[0]?.id ?? null);
+      selectSingleClip(target.clips[0]?.id ?? null);
       setExportedCount(target.exportedCount ?? 0);
       setHistoryPast([]);
       setHistoryFuture([]);
@@ -1793,7 +1852,7 @@ export default function App() {
       skipNextSavePulseRef.current = true;
       setScreenMode('editor');
     },
-    [savedProjects]
+    [savedProjects, selectSingleClip]
   );
 
   const handleDeleteProject = useCallback((projectId: string) => {
@@ -1887,18 +1946,18 @@ export default function App() {
           onToggleScopes={() => setShowScopes((v) => !v)}
           onSplitAtPlayhead={handleSplitAtPlayhead}
           onSelectClip={(id) => {
-            setSelectedClipId(id);
+            selectSingleClip(id);
             setNormalizeStatusMessage(null);
           }}
           onOpenTextEditor={(id) => {
-            setSelectedClipId(id);
+            selectSingleClip(id);
             setLeftTab('titles');
             if (typeof window !== 'undefined' && window.innerWidth < 1024) {
               setMobileSheet('vault');
             }
           }}
           onOpenEmojiEditor={(id) => {
-            setSelectedClipId(id);
+            selectSingleClip(id);
             setLeftTab('emoji');
             if (typeof window !== 'undefined' && window.innerWidth < 1024) {
               setMobileSheet('vault');
@@ -1921,18 +1980,22 @@ export default function App() {
         assets={assets}
         markers={markers}
         selectedClipId={selectedClipId}
+        selectedClipIds={selectedClipIds}
         playhead={playhead}
         totalDuration={totalDuration}
         zoomPxPerSec={zoomPxPerSec}
         snapEnabled={snapEnabled}
+        gridSnapEnabled={gridSnapEnabled}
         rippleEnabled={rippleEnabled}
         onSelectClip={(id) => {
-          setSelectedClipId(id);
+          selectSingleClip(id);
           setNormalizeStatusMessage(null);
         }}
+        onSelectClips={handleSelectClips}
         onSeek={handleSeek}
         onZoomChange={setZoomPxPerSec}
         onToggleSnap={() => setSnapEnabled((s) => !s)}
+        onToggleGridSnap={() => setGridSnapEnabled((g) => !g)}
         onToggleRipple={() => setRippleEnabled((r) => !r)}
         onToggleTrackFlag={handleToggleTrackFlag}
         onOpenAddMedia={(mode) => setAddMediaModal({ open: true, mode })}
@@ -1942,6 +2005,7 @@ export default function App() {
         onRemoveMarker={handleRemoveMarker}
         onCompactGaps={handleCompactGaps}
         onMoveClip={handleMoveClip}
+        onMoveSelectedClips={handleMoveSelectedClips}
         onTrimClip={handleTrimClip}
         onCommitDragHistory={handleCommitClipHistory}
         onNudgeClip={handleNudgeClip}
@@ -1953,7 +2017,7 @@ export default function App() {
         onDropTransitionOnSeam={handleApplyTransitionToSeam}
         onOpenTransitionLibraryForSeam={(seam) => {
           setActiveSeamId(seam.id);
-          setSelectedClipId(seam.rightClipId);
+          selectSingleClip(seam.rightClipId);
           setTransitionLibraryOpen(true);
         }}
         isDraggingTransitionFromLibrary={isDraggingTransition}
@@ -2172,7 +2236,7 @@ export default function App() {
         tracks={tracks}
         assets={assets}
         savedGallery={savedGallery}
-        onSaveToGallery={(res: ExportResult, adUnitId: string) => {
+        onSaveToGallery={(res: ExportResult, adUnitId: string, renderedAspectRatio?: AspectRatio) => {
           setExportedCount((c) => {
             const next = c + 1;
             persistCurrentProject(next);
@@ -2189,7 +2253,7 @@ export default function App() {
                 blobUrl: res.blobUrl,
                 blob: res.blob,
                 createdAt: Date.now(),
-                aspectRatio,
+                aspectRatio: renderedAspectRatio ?? aspectRatio,
                 adUnitId,
               },
               ...prev,

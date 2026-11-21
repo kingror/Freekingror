@@ -565,6 +565,89 @@ export function findSnapTime(
   ).time;
 }
 
+export function getTimelineGridStep(zoomPxPerSec: number): number {
+  if (zoomPxPerSec >= 100) return 0.25;
+  if (zoomPxPerSec >= 55) return 0.5;
+  return 1;
+}
+
+export function quantizeToFrameBoundary(timeSec: number, fps = 30): number {
+  const safeFps = Math.max(1, fps);
+  const safeTime = Math.max(0, timeSec);
+  return Math.max(0, Number((Math.round(safeTime * safeFps) / safeFps).toFixed(3)));
+}
+
+export function computeGridAwareSnapResult(params: {
+  candidateTime: number;
+  clips: TimelineClip[];
+  excludeClipIds?: string[];
+  playhead: number;
+  thresholdSeconds: number;
+  markerTimes?: number[];
+  snapEnabled: boolean;
+  gridSnapEnabled: boolean;
+  gridStepSec: number;
+  fps?: number;
+}): { time: number; snappedTo: number | null; snapKind: 'magnetic' | 'grid' | 'frame' | null } {
+  const {
+    candidateTime,
+    clips,
+    excludeClipIds = [],
+    playhead,
+    thresholdSeconds,
+    markerTimes = [],
+    snapEnabled,
+    gridSnapEnabled,
+    gridStepSec,
+    fps = 30,
+  } = params;
+
+  const safeCandidate = Math.max(0, candidateTime);
+  const excluded = new Set(excludeClipIds);
+
+  if (snapEnabled) {
+    const targets: number[] = [0, playhead, ...markerTimes];
+    for (const c of clips) {
+      if (excluded.has(c.id)) continue;
+      targets.push(c.startTime, c.startTime + c.duration);
+    }
+
+    let best = safeCandidate;
+    let bestDist = thresholdSeconds;
+    let snappedTo: number | null = null;
+    for (const target of targets) {
+      const dist = Math.abs(safeCandidate - target);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = target;
+        snappedTo = Number(target.toFixed(3));
+      }
+    }
+    if (snappedTo !== null) {
+      return { time: Number(best.toFixed(3)), snappedTo, snapKind: 'magnetic' };
+    }
+  }
+
+  if (gridSnapEnabled) {
+    const safeStep = Math.max(0.05, gridStepSec);
+    const gridTarget = Math.max(
+      0,
+      Number((Math.round(safeCandidate / safeStep) * safeStep).toFixed(3))
+    );
+    const gridThreshold = Math.max(thresholdSeconds, Math.min(0.22, safeStep * 0.35));
+    if (Math.abs(safeCandidate - gridTarget) <= gridThreshold) {
+      return { time: gridTarget, snappedTo: gridTarget, snapKind: 'grid' };
+    }
+    return {
+      time: quantizeToFrameBoundary(safeCandidate, fps),
+      snappedTo: null,
+      snapKind: 'frame',
+    };
+  }
+
+  return { time: Number(safeCandidate.toFixed(3)), snappedTo: null, snapKind: null };
+}
+
 export function clampTrimEdit(
   origStart: number,
   origDuration: number,

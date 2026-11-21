@@ -316,6 +316,12 @@ test('applyTransitionBetweenClips assigns transitionIn and snaps tiny gaps clean
   assert.equal(nextC2.transitionIn.duration, 0.75);
 });
 
+import {
+  computeGridAwareSnapResult,
+  getTimelineGridStep,
+  quantizeToFrameBoundary,
+} from './timelineMath';
+
 test('detectBeatMarkerTimes extracts spaced waveform transients within clip bounds', () => {
   const waveform = [0.2, 0.9, 0.3, 0.2, 0.85, 0.25, 0.2, 0.95, 0.3, 0.2, 0.88, 0.2];
   const beats = detectBeatMarkerTimes(waveform, 1.0, 10.0, 1.0, 8);
@@ -326,5 +332,59 @@ test('detectBeatMarkerTimes extracts spaced waveform transients within clip boun
   assert.ok(beats.every((b) => b >= 1.0 && b < 11.0));
 });
 
+test('getTimelineGridStep, quantizeToFrameBoundary, and computeGridAwareSnapResult snap to markers, grid lines, and 30fps frames', () => {
+  assert.equal(getTimelineGridStep(40), 1);
+  assert.equal(getTimelineGridStep(64), 0.5);
+  assert.equal(getTimelineGridStep(120), 0.25);
 
+  assert.equal(quantizeToFrameBoundary(1.033, 30), 1.033);
+  assert.equal(quantizeToFrameBoundary(1.501, 30), 1.5);
 
+  const c1 = makeClip({ id: 'c1', startTime: 0, duration: 4 });
+  // Priority 1: marker / clip edge when magnetic snap is enabled
+  const markerHit = computeGridAwareSnapResult({
+    candidateTime: 3.93,
+    clips: [c1],
+    excludeClipIds: ['c2'],
+    playhead: 10,
+    thresholdSeconds: 0.12,
+    markerTimes: [5.5],
+    snapEnabled: true,
+    gridSnapEnabled: true,
+    gridStepSec: 0.5,
+  });
+  assert.equal(markerHit.time, 4);
+  assert.equal(markerHit.snapKind, 'magnetic');
+
+  // Priority 2: visual grid line when magnetic targets are out of range
+  const gridHit = computeGridAwareSnapResult({
+    candidateTime: 2.43,
+    clips: [c1],
+    excludeClipIds: ['c2'],
+    playhead: 10,
+    thresholdSeconds: 0.12,
+    markerTimes: [5.5],
+    snapEnabled: true,
+    gridSnapEnabled: true,
+    gridStepSec: 0.5,
+  });
+  assert.equal(gridHit.time, 2.5);
+  assert.equal(gridHit.snapKind, 'grid');
+  assert.equal(gridHit.snappedTo, 2.5);
+
+  // Priority 3: frame boundary quantization between grid lines
+  const frameHit = computeGridAwareSnapResult({
+    candidateTime: 2.21,
+    clips: [c1],
+    excludeClipIds: ['c2'],
+    playhead: 10,
+    thresholdSeconds: 0.1,
+    markerTimes: [],
+    snapEnabled: false,
+    gridSnapEnabled: true,
+    gridStepSec: 0.5,
+    fps: 30,
+  });
+  assert.equal(frameHit.snapKind, 'frame');
+  assert.equal(frameHit.time, 2.2);
+});

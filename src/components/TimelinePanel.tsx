@@ -3,12 +3,14 @@ import {
   Activity,
   AlignHorizontalJustifyStart,
   ArrowRightLeft,
+  BoxSelect,
   ChevronLeft,
   ChevronRight,
   Copy,
   Eye,
   EyeOff,
   Flag,
+  Grid3X3,
   Lock,
   Magnet,
   Plus,
@@ -33,12 +35,17 @@ import type {
 } from '../types/editor';
 import {
   clampTrimEdit,
-  computeSnapResult,
+  computeGridAwareSnapResult,
   findTimelineClipSeams,
   formatShortTime,
+  getTimelineGridStep,
   isClipCompatibleWithTrack,
   type TimelineClipSeam,
 } from '../engine/timelineMath';
+import {
+  findClipsInLassoRect,
+  toggleClipInSelection,
+} from '../engine/timelineSelection';
 import { TRANSITION_LIBRARY } from '../engine/transitionsLibrary';
 import { getTrackVolumePct } from '../engine/audioMixer';
 import type { LiveAudioLevelSnapshot } from '../engine/audioEngine';
@@ -50,15 +57,19 @@ interface TimelinePanelProps {
   assets: MediaAsset[];
   markers: TimelineMarker[];
   selectedClipId: string | null;
+  selectedClipIds: string[];
   playhead: number;
   totalDuration: number;
   zoomPxPerSec: number;
   snapEnabled: boolean;
+  gridSnapEnabled: boolean;
   rippleEnabled: boolean;
   onSelectClip: (clipId: string) => void;
+  onSelectClips: (clipIds: string[], primaryId: string | null) => void;
   onSeek: (time: number) => void;
   onZoomChange: (pxPerSec: number) => void;
   onToggleSnap: () => void;
+  onToggleGridSnap: () => void;
   onToggleRipple: () => void;
   onToggleTrackFlag: (trackId: string, flag: 'muted' | 'locked' | 'hidden' | 'solo') => void;
   onOpenAddMedia: (kind: 'video' | 'audio') => void;
@@ -68,6 +79,11 @@ interface TimelinePanelProps {
   onRemoveMarker: (markerId: string) => void;
   onCompactGaps: () => void;
   onMoveClip: (clipId: string, newStartTime: number, targetTrackId?: string) => void;
+  onMoveSelectedClips: (
+    anchorClipId: string,
+    targetAnchorStart: number,
+    origStartsById: Record<string, number>
+  ) => void;
   onTrimClip: (clipId: string, newStartTime: number, newDuration: number, newSourceOffset: number) => void;
   onCommitDragHistory?: (preDragClips: TimelineClip[]) => void;
   onNudgeClip: (deltaFrames: number) => void;
@@ -124,15 +140,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   assets,
   markers,
   selectedClipId,
+  selectedClipIds,
   playhead,
   totalDuration,
   zoomPxPerSec,
   snapEnabled,
+  gridSnapEnabled,
   rippleEnabled,
   onSelectClip,
+  onSelectClips,
   onSeek,
   onZoomChange,
   onToggleSnap,
+  onToggleGridSnap,
   onToggleRipple,
   onToggleTrackFlag,
   onOpenAddMedia,
@@ -142,6 +162,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onRemoveMarker,
   onCompactGaps,
   onMoveClip,
+  onMoveSelectedClips,
   onTrimClip,
   onCommitDragHistory,
   onNudgeClip,
@@ -168,8 +189,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onResetMix,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lanesRef = useRef<HTMLDivElement>(null);
   const preDragTracksRef = useRef<TimelineTrack[] | null>(null);
   const trackRowHeight = 40;
+  const [lassoMode, setLassoMode] = useState(false);
+  const [lassoRect, setLassoRect] = useState<{
+    startX: number;
+    startY: number;
+    currX: number;
+    currY: number;
+    additive: boolean;
+    baseIds: string[];
+    moved: boolean;
+  } | null>(null);
   const [dragState, setDragState] = useState<{
     clipId: string;
     mode: 'move' | 'trimLeft' | 'trimRight';
@@ -184,6 +216,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     liveTrackId: string;
     hoverTrackId: string | null;
     hoverTrackCompatible: boolean;
+    selectedIds: string[];
+    origStartsById: Record<string, number>;
     preDragClips: TimelineClip[];
     didMutate: boolean;
   } | null>(null);
@@ -201,11 +235,20 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   const markerTimes = markers.map((m) => m.time);
   const timelineSpan = Math.max(20, totalDuration + 6);
   const timelineWidthPx = Math.round(timelineSpan * zoomPxPerSec);
+  const gridStepSec = getTimelineGridStep(zoomPxPerSec);
 
   const tickStep = zoomPxPerSec >= 75 ? 1 : zoomPxPerSec >= 40 ? 2 : 5;
   const rulerTicks: number[] = [];
   for (let t = 0; t <= timelineSpan; t += tickStep) {
     rulerTicks.push(t);
+  }
+
+  const gridLines: number[] = [];
+  if (gridSnapEnabled) {
+    const count = Math.floor(timelineSpan / gridStepSec);
+    for (let i = 1; i <= count; i++) {
+      gridLines.push(Number((i * gridStepSec).toFixed(3)));
+    }
   }
 
   const clientXToTime = (clientX: number): number => {
@@ -235,8 +278,32 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   ) => {
     const trIdx = tracks.findIndex((t) => t.id === clip.trackId);
     if (trIdx >= 0 && tracks[trIdx].locked) return;
+    if (lassoMode && mode === 'move' && !e.ctrlKey && !e.metaKey) {
+      return;
+    }
     e.stopPropagation();
-    onSelectClip(clip.id);
+
+    if (mode === 'move' && (e.ctrlKey || e.metaKey)) {
+      const nextSel = toggleClipInSelection(selectedClipIds, clip.id, true);
+      onSelectClips(nextSel.selectedIds, nextSel.primaryId);
+      return;
+    }
+
+    const activeIds =
+      mode === 'move' && selectedClipIds.includes(clip.id) && selectedClipIds.length > 1
+        ? selectedClipIds
+        : [clip.id];
+    if (activeIds.length === 1) {
+      onSelectClips([clip.id], clip.id);
+    }
+
+    const origStartsById: Record<string, number> = {};
+    for (const c of clips) {
+      if (activeIds.includes(c.id)) {
+        origStartsById[c.id] = c.startTime;
+      }
+    }
+
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     setDragState({
       clipId: clip.id,
@@ -252,6 +319,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       liveTrackId: clip.trackId,
       hoverTrackId: clip.trackId,
       hoverTrackCompatible: true,
+      selectedIds: activeIds,
+      origStartsById,
       preDragClips: clips,
       didMutate: false,
     });
@@ -282,15 +351,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     if (dragState.mode === 'move') {
       let nextStart = Math.max(0, dragState.origStart + deltaSec);
       let guide: number | null = null;
-      if (snapEnabled) {
-        const res = computeSnapResult(
-          nextStart,
+      if (snapEnabled || gridSnapEnabled) {
+        const res = computeGridAwareSnapResult({
+          candidateTime: nextStart,
           clips,
-          dragState.clipId,
+          excludeClipIds: dragState.selectedIds,
           playhead,
-          snapThreshold,
-          markerTimes
-        );
+          thresholdSeconds: snapThreshold,
+          markerTimes,
+          snapEnabled,
+          gridSnapEnabled,
+          gridStepSec,
+          fps: 30,
+        });
         nextStart = res.time;
         guide = res.snappedTo;
       }
@@ -298,7 +371,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       let nextTrackId: string | undefined;
       let hoverTrackId: string | null = dragState.liveTrackId;
       let hoverTrackCompatible = true;
-      if (clipObj) {
+      if (clipObj && dragState.selectedIds.length <= 1) {
         const domHovered = resolveHoveredTrackFromY(e.clientY);
         const laneDelta = Math.round((e.clientY - dragState.startClientY) / trackRowHeight);
         const fallbackTrack =
@@ -327,21 +400,29 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             }
           : null
       );
-      onMoveClip(dragState.clipId, Number(nextStart.toFixed(3)), nextTrackId);
+      if (dragState.selectedIds.length > 1) {
+        onMoveSelectedClips(dragState.clipId, Number(nextStart.toFixed(3)), dragState.origStartsById);
+      } else {
+        onMoveClip(dragState.clipId, Number(nextStart.toFixed(3)), nextTrackId);
+      }
     } else if (dragState.mode === 'trimLeft') {
       let effectiveDelta = deltaSec;
       let guide: number | null = null;
-      if (snapEnabled) {
+      if (snapEnabled || gridSnapEnabled) {
         const candStart = Math.max(0, dragState.origStart + deltaSec);
-        const res = computeSnapResult(
-          candStart,
+        const res = computeGridAwareSnapResult({
+          candidateTime: candStart,
           clips,
-          dragState.clipId,
+          excludeClipIds: [dragState.clipId],
           playhead,
-          snapThreshold,
-          markerTimes
-        );
-        if (res.snappedTo !== null) {
+          thresholdSeconds: snapThreshold,
+          markerTimes,
+          snapEnabled,
+          gridSnapEnabled,
+          gridStepSec,
+          fps: 30,
+        });
+        if (res.snapKind !== null) {
           effectiveDelta = res.time - dragState.origStart;
           guide = res.snappedTo;
         }
@@ -365,17 +446,21 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     } else if (dragState.mode === 'trimRight') {
       let effectiveDelta = deltaSec;
       let guide: number | null = null;
-      if (snapEnabled) {
+      if (snapEnabled || gridSnapEnabled) {
         const candEnd = dragState.origStart + Math.max(0.3, dragState.origDuration + deltaSec);
-        const res = computeSnapResult(
-          candEnd,
+        const res = computeGridAwareSnapResult({
+          candidateTime: candEnd,
           clips,
-          dragState.clipId,
+          excludeClipIds: [dragState.clipId],
           playhead,
-          snapThreshold,
-          markerTimes
-        );
-        if (res.snappedTo !== null) {
+          thresholdSeconds: snapThreshold,
+          markerTimes,
+          snapEnabled,
+          gridSnapEnabled,
+          gridStepSec,
+          fps: 30,
+        });
+        if (res.snapKind !== null) {
           effectiveDelta = res.time - dragState.origStart - dragState.origDuration;
           guide = res.snappedTo;
         }
@@ -407,6 +492,77 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     setSnapGuideTime(null);
   };
 
+  const getRelativeLanePoint = (clientX: number, clientY: number) => {
+    const el = lanesRef.current;
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
+    const maxH = Math.max(trackRowHeight, tracks.length * trackRowHeight);
+    return {
+      x: Math.max(0, Math.min(timelineWidthPx, clientX - rect.left)),
+      y: Math.max(0, Math.min(maxH, clientY - rect.top)),
+    };
+  };
+
+  const startLassoDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const pt = getRelativeLanePoint(e.clientX, e.clientY);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setLassoRect({
+      startX: pt.x,
+      startY: pt.y,
+      currX: pt.x,
+      currY: pt.y,
+      additive: e.ctrlKey || e.metaKey || e.shiftKey,
+      baseIds: e.ctrlKey || e.metaKey || e.shiftKey ? selectedClipIds : [],
+      moved: false,
+    });
+  };
+
+  const moveLassoDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!lassoRect) return;
+    const pt = getRelativeLanePoint(e.clientX, e.clientY);
+    const dist = Math.hypot(pt.x - lassoRect.startX, pt.y - lassoRect.startY);
+    const hasMoved = lassoRect.moved || dist > 4;
+    const nextState = {
+      ...lassoRect,
+      currX: pt.x,
+      currY: pt.y,
+      moved: hasMoved,
+    };
+    setLassoRect(nextState);
+
+    if (hasMoved) {
+      const tStart = Math.min(nextState.startX, nextState.currX) / zoomPxPerSec;
+      const tEnd = Math.max(nextState.startX, nextState.currX) / zoomPxPerSec;
+      const minTrackIdx = Math.max(
+        0,
+        Math.floor(Math.min(nextState.startY, nextState.currY) / trackRowHeight)
+      );
+      const maxTrackIdx = Math.min(
+        Math.max(0, tracks.length - 1),
+        Math.floor(Math.max(nextState.startY, nextState.currY) / trackRowHeight)
+      );
+      const hits = findClipsInLassoRect(clips, tracks, {
+        startTime: tStart,
+        endTime: tEnd,
+        minTrackIdx,
+        maxTrackIdx,
+      });
+      const merged = nextState.additive
+        ? Array.from(new Set([...nextState.baseIds, ...hits]))
+        : hits;
+      onSelectClips(merged, merged[merged.length - 1] ?? null);
+    }
+  };
+
+  const endLassoDrag = () => {
+    if (!lassoRect) return;
+    if (!lassoRect.moved && !lassoRect.additive) {
+      onSelectClips([], null);
+    }
+    setLassoRect(null);
+  };
+
   const computeDropSlot = (track: TimelineTrack, cursorTime: number) => {
     const laneClips = clips
       .filter((c) => c.trackId === track.id)
@@ -433,9 +589,21 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       }
     }
 
-    const snapped = snapEnabled
-      ? computeSnapResult(cursorTime, clips, '', playhead, 12 / zoomPxPerSec).time
-      : cursorTime;
+    const snapped =
+      snapEnabled || gridSnapEnabled
+        ? computeGridAwareSnapResult({
+            candidateTime: cursorTime,
+            clips,
+            excludeClipIds: [],
+            playhead,
+            thresholdSeconds: 12 / zoomPxPerSec,
+            markerTimes,
+            snapEnabled,
+            gridSnapEnabled,
+            gridStepSec,
+            fps: 30,
+          }).time
+        : cursorTime;
     return {
       trackId: track.id,
       startTime: Number(snapped.toFixed(2)),
@@ -562,14 +730,35 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           <button
             type="button"
             onClick={onDeleteClip}
-            disabled={!selectedClipId}
-            aria-label="Delete Clip"
-            title={rippleEnabled ? 'Ripple Delete Clip' : 'Delete Selected Clip'}
+            disabled={selectedClipIds.length === 0 && !selectedClipId}
+            aria-label={
+              selectedClipIds.length > 1
+                ? `Delete ${selectedClipIds.length} Selected Clips`
+                : 'Delete Clip'
+            }
+            title={
+              selectedClipIds.length > 1
+                ? `Delete ${selectedClipIds.length} Selected Clips`
+                : rippleEnabled
+                ? 'Ripple Delete Clip'
+                : 'Delete Selected Clip'
+            }
             className="min-h-[34px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md text-xs font-medium text-rose-300 hover:bg-rose-500/15 disabled:opacity-35 disabled:pointer-events-none transition-colors whitespace-nowrap"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">Delete</span>
+            <span className="hidden md:inline">
+              {selectedClipIds.length > 1 ? `Delete (${selectedClipIds.length})` : 'Delete'}
+            </span>
           </button>
+
+          {selectedClipIds.length > 1 && (
+            <span
+              data-testid="timeline-selection-count"
+              className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/40 text-[10px] font-mono-tabular font-semibold text-amber-200 whitespace-nowrap"
+            >
+              {selectedClipIds.length} selected
+            </span>
+          )}
 
           <div className="hidden sm:flex items-center gap-0.5 border-l border-white/10 pl-1.5 ml-0.5">
             <button
@@ -688,10 +877,27 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
           <button
             type="button"
+            onClick={() => setLassoMode((m) => !m)}
+            data-testid="timeline-lasso-toggle"
+            aria-label="Toggle Lasso Multi-Select"
+            aria-pressed={lassoMode}
+            title="Lasso Multi-Select (or drag empty lane space / Ctrl+Click clips)"
+            className={`min-h-[30px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+              lassoMode
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                : 'text-zinc-400 hover:bg-white/10'
+            }`}
+          >
+            <BoxSelect className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Lasso</span>
+          </button>
+
+          <button
+            type="button"
             onClick={onToggleSnap}
             aria-label="Toggle Magnetic Snap"
             aria-pressed={snapEnabled}
-            title="Magnetic Snapping"
+            title="Magnetic Snapping (clip edges, markers & playhead)"
             className={`min-h-[30px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
               snapEnabled
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
@@ -700,6 +906,23 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           >
             <Magnet className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Snap</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleGridSnap}
+            data-testid="timeline-grid-toggle"
+            aria-label="Toggle Visual Snap-to-Grid"
+            aria-pressed={gridSnapEnabled}
+            title={`Visual Snap-to-Grid (${gridStepSec}s grid + frame boundaries)`}
+            className={`min-h-[30px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+              gridSnapEnabled
+                ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/40'
+                : 'text-zinc-400 hover:bg-white/10'
+            }`}
+          >
+            <Grid3X3 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Grid</span>
           </button>
 
           <div className="flex items-center gap-0.5 rounded-md border border-white/10 bg-[#0B0D12] px-0.5 sm:px-1">
@@ -884,8 +1107,53 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
               ))}
             </div>
 
-            {/* Track Lanes (Drop Targets + Clips) */}
-            <div className="divide-y divide-white/5 relative">
+            {/* Track Lanes (Drop Targets + Grid Overlay + Lasso + Clips) */}
+            <div
+              ref={lanesRef}
+              data-testid="timeline-lanes-surface"
+              onPointerDown={startLassoDrag}
+              onPointerMove={moveLassoDrag}
+              onPointerUp={endLassoDrag}
+              onPointerCancel={endLassoDrag}
+              className={`divide-y divide-white/5 relative touch-none ${
+                lassoMode ? 'cursor-crosshair' : ''
+              }`}
+            >
+              {/* Visual Snap-to-Grid Vertical Lines */}
+              {gridSnapEnabled && (
+                <div
+                  data-testid="timeline-grid-overlay"
+                  className="absolute inset-0 pointer-events-none z-0"
+                >
+                  {gridLines.map((t) => {
+                    const isMajor = Math.abs(t - Math.round(t)) < 1e-4;
+                    return (
+                      <div
+                        key={t}
+                        style={{ left: `${t * zoomPxPerSec}px` }}
+                        className={`absolute top-0 bottom-0 border-l ${
+                          isMajor ? 'border-cyan-400/20' : 'border-white/[0.06]'
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Lasso Selection Marquee Rectangle */}
+              {lassoRect && lassoRect.moved && (
+                <div
+                  data-testid="timeline-lasso-rect"
+                  style={{
+                    left: `${Math.min(lassoRect.startX, lassoRect.currX)}px`,
+                    top: `${Math.min(lassoRect.startY, lassoRect.currY)}px`,
+                    width: `${Math.max(2, Math.abs(lassoRect.currX - lassoRect.startX))}px`,
+                    height: `${Math.max(2, Math.abs(lassoRect.currY - lassoRect.startY))}px`,
+                  }}
+                  className="absolute border border-amber-400 bg-amber-400/15 rounded-xs pointer-events-none z-35"
+                />
+              )}
+
               {tracks.map((tr) => {
                 const trackClips = clips.filter((c) => c.trackId === tr.id);
                 const trackSeams = findTimelineClipSeams(clips, [tr]);
@@ -929,7 +1197,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                     {trackClips.map((clip) => {
                       const leftPx = clip.startTime * zoomPxPerSec;
                       const widthPx = Math.max(28, clip.duration * zoomPxPerSec);
-                      const isSelected = clip.id === selectedClipId;
+                      const isSelected =
+                        clip.id === selectedClipId || selectedClipIds.includes(clip.id);
                       const isDraggingThis = dragState?.clipId === clip.id;
                       const asset = assetMap.get(clip.assetId);
                       const colorCls =
@@ -949,7 +1218,16 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault();
-                              onSelectClip(clip.id);
+                              if (e.ctrlKey || e.metaKey) {
+                                const next = toggleClipInSelection(
+                                  selectedClipIds,
+                                  clip.id,
+                                  true
+                                );
+                                onSelectClips(next.selectedIds, next.primaryId);
+                              } else {
+                                onSelectClip(clip.id);
+                              }
                             }
                           }}
                           style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
