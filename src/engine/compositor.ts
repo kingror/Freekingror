@@ -1,4 +1,4 @@
-import type { MediaAsset, TimelineClip, TimelineTrack } from '../types/editor';
+import type { MediaAsset, TimelineClip, TimelineTrack, TransitionType } from '../types/editor';
 import {
   applyPixelGradeAndChroma,
   applySharpnessPass,
@@ -14,6 +14,13 @@ import {
   getEffectiveSpeedAtTime,
 } from './timelineMath';
 import { getClipCanvasBox } from './previewGizmo';
+import { computeTransitionFrameState } from './transitionsLibrary';
+import { renderNeonClipEffect } from './neonEngine';
+import {
+  computeMotionBlurTrailOffsets,
+  evaluateMotionPresetTransform,
+} from './motionPresets';
+import { resolveRenderableAssetSrc } from './proxyGenerator';
 
 export class MediaElementCache {
   private images = new Map<string, HTMLImageElement>();
@@ -21,6 +28,7 @@ export class MediaElementCache {
   private failedVideos = new Set<string>();
   private offscreenCanvas: HTMLCanvasElement | null = null;
   private vfxCanvas: HTMLCanvasElement | null = null;
+  private featherCanvas: HTMLCanvasElement | null = null;
 
   preloadImage(src: string, img: HTMLImageElement): void {
     if (img.complete && img.naturalWidth > 0) {
@@ -128,6 +136,105 @@ export class MediaElementCache {
     if (this.vfxCanvas.height !== height) this.vfxCanvas.height = height;
     return this.vfxCanvas;
   }
+
+  getFeatherCanvas(width: number, height: number): HTMLCanvasElement {
+    if (!this.featherCanvas) {
+      this.featherCanvas = document.createElement('canvas');
+    }
+    if (this.featherCanvas.width !== width) this.featherCanvas.width = width;
+    if (this.featherCanvas.height !== height) this.featherCanvas.height = height;
+    return this.featherCanvas;
+  }
+}
+
+function applyMaskAndFeatherAlpha(
+  fCtx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  mask: TimelineClip['mask'],
+  tf: { x: number; y: number; scale: number },
+  featherPct: number
+): void {
+  const f = clamp(featherPct / 100, 0, 1);
+  if (f <= 0.01) return;
+
+  fCtx.save();
+  fCtx.globalCompositeOperation = 'destination-in';
+
+  if (mask === 'circle') {
+    const cx = width / 2 + tf.x * width;
+    const cy = height / 2 + tf.y * height;
+    const radius = Math.min(width, height) * 0.42 * clamp(tf.scale, 0.25, 2.5);
+    const innerR = Math.max(0, radius * (1 - f * 0.78));
+    const grad = fCtx.createRadialGradient(cx, cy, innerR, cx, cy, Math.max(1, radius));
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    fCtx.fillStyle = grad;
+    fCtx.fillRect(0, 0, width, height);
+    fCtx.restore();
+    return;
+  }
+
+  if (mask === 'splitLeft') {
+    const splitX = width * 0.5;
+    const band = Math.max(8, width * 0.22 * f);
+    const grad = fCtx.createLinearGradient(splitX - band, 0, splitX, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    fCtx.fillStyle = grad;
+    fCtx.fillRect(0, 0, width, height);
+    fCtx.restore();
+    return;
+  }
+
+  if (mask === 'splitRight') {
+    const splitX = width * 0.5;
+    const band = Math.max(8, width * 0.22 * f);
+    const grad = fCtx.createLinearGradient(splitX, 0, splitX + band, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(1, 'rgba(255,255,255,1)');
+    fCtx.fillStyle = grad;
+    fCtx.fillRect(0, 0, width, height);
+    fCtx.restore();
+    return;
+  }
+
+  if (mask === 'cinema') {
+    const bar = height * 0.14;
+    const band = Math.max(8, height * 0.2 * f);
+    const topGrad = fCtx.createLinearGradient(0, bar, 0, bar + band);
+    topGrad.addColorStop(0, 'rgba(255,255,255,0)');
+    topGrad.addColorStop(1, 'rgba(255,255,255,1)');
+    fCtx.fillStyle = topGrad;
+    fCtx.fillRect(0, 0, width, height * 0.5);
+
+    const botGrad = fCtx.createLinearGradient(0, height - bar - band, 0, height - bar);
+    botGrad.addColorStop(0, 'rgba(255,255,255,1)');
+    botGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    fCtx.fillStyle = botGrad;
+    fCtx.fillRect(0, height * 0.5, width, height * 0.5);
+    fCtx.restore();
+    return;
+  }
+
+  // Full frame ('none') or 'rounded' — radial elliptical alpha feather around box bounds
+  const isRounded = mask === 'rounded';
+  const cx = isRounded ? width / 2 + tf.x * width : width / 2;
+  const cy = isRounded ? height / 2 + tf.y * height : height / 2;
+  const boxW = isRounded ? width * clamp(tf.scale, 0.25, 2.5) : width;
+  const boxH = isRounded ? height * clamp(tf.scale, 0.25, 2.5) : height;
+  const maxR = Math.max(boxW, boxH) * 0.56;
+  const innerR = Math.max(4, maxR * (1 - f * 0.65));
+
+  fCtx.translate(cx, cy);
+  fCtx.scale(boxW / Math.max(1, maxR * 2), boxH / Math.max(1, maxR * 2));
+  const rad = fCtx.createRadialGradient(0, 0, innerR, 0, 0, maxR);
+  rad.addColorStop(0, 'rgba(255,255,255,1)');
+  rad.addColorStop(0.75, `rgba(255,255,255,${(1 - f * 0.35).toFixed(2)})`);
+  rad.addColorStop(1, 'rgba(255,255,255,0)');
+  fCtx.fillStyle = rad;
+  fCtx.fillRect(-maxR * 1.5, -maxR * 1.5, maxR * 3, maxR * 3);
+  fCtx.restore();
 }
 
 export interface RenderFrameOptions {
@@ -145,6 +252,10 @@ export interface RenderFrameOptions {
   selectedClipId?: string | null;
   showSelectionBox?: boolean;
   snapGuides?: { x: boolean; y: boolean };
+  previewLutOverride?: { clipId: string; lutId: string } | null;
+  previewTransitionOverride?: { clipId: string; type: TransitionType; progress: number } | null;
+  animateEffects?: boolean;
+  preferProxy?: boolean;
   onAssetLoad?: () => void;
 }
 
@@ -212,17 +323,35 @@ function drawTextOverlay(
   width: number,
   height: number,
   localTime: number,
-  isPlaying: boolean
+  shouldAnimate: boolean,
+  previewTransitionOverride?: { clipId: string; type: TransitionType; progress: number } | null
 ) {
   const cfg = clip.textConfig;
   if (!cfg) return;
 
   const tf = evaluateKeyframes(clip, localTime);
-  const animIn = isPlaying ? clamp(localTime / 0.45, 0, 1) : 1;
-  const animOut = isPlaying ? clamp((clip.duration - localTime) / 0.35, 0, 1) : 1;
-  let alpha = tf.opacity * Math.min(1, animOut);
-  let offsetY = 0;
-  let scaleAnim = 1;
+  const mp = evaluateMotionPresetTransform(clip.motionPreset, localTime, clip.duration);
+  const isPreviewingTrans = previewTransitionOverride?.clipId === clip.id;
+  const activeTransType = isPreviewingTrans
+    ? previewTransitionOverride.type
+    : clip.transitionIn.type;
+  const transDur = Math.max(0.05, clip.transitionIn.duration);
+  const transProgress = isPreviewingTrans
+    ? clamp(previewTransitionOverride.progress, 0, 1)
+    : clamp(localTime / transDur, 0, 1);
+  const transState =
+    activeTransType !== 'none' &&
+    (isPreviewingTrans || (shouldAnimate && localTime < transDur))
+      ? computeTransitionFrameState(activeTransType, transProgress, width, height)
+      : null;
+
+  const animIn = shouldAnimate ? clamp(localTime / 0.45, 0, 1) : 1;
+  const animOut = shouldAnimate ? clamp((clip.duration - localTime) / 0.35, 0, 1) : 1;
+  let alpha = tf.opacity * mp.opacityMult * Math.min(1, animOut) * (transState?.opacity ?? 1);
+  let offsetY = (transState?.offsetY ?? 0) + mp.dy * height;
+  let offsetX = (transState?.offsetX ?? 0) + mp.dx * width;
+  let scaleAnim = (transState?.scale ?? 1) * mp.scaleMult;
+  let extraBlurPx = transState?.blurPx ?? 0;
   let visibleText = cfg.text;
 
   switch (cfg.animation) {
@@ -231,14 +360,36 @@ function drawTextOverlay(
       break;
     case 'slideUp':
       alpha *= animIn;
-      offsetY = (1 - Math.pow(animIn, 0.5)) * 36;
+      offsetY += (1 - Math.pow(animIn, 0.5)) * 36;
       break;
     case 'pop':
-      scaleAnim = 0.65 + 0.35 * Math.sin(clamp(animIn, 0, 1) * (Math.PI / 2));
+      scaleAnim *= 0.65 + 0.35 * Math.sin(clamp(animIn, 0, 1) * (Math.PI / 2));
+      alpha *= animIn;
+      break;
+    case 'bounce': {
+      const p = clamp(animIn, 0, 1);
+      const c1 = 1.70158;
+      const c3 = c1 + 1;
+      const spring = 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2);
+      scaleAnim *= shouldAnimate ? clamp(0.45 + 0.55 * spring, 0.4, 1.18) : 1;
+      alpha *= Math.min(1, p * 1.6);
+      break;
+    }
+    case 'glitch': {
+      if (shouldAnimate && animIn < 1) {
+        offsetX += Math.sin(localTime * 68) * (1 - animIn) * 18;
+        offsetY += Math.cos(localTime * 52) * (1 - animIn) * 6;
+      }
+      alpha *= Math.min(1, animIn * 1.4);
+      break;
+    }
+    case 'zoomBlur':
+      scaleAnim *= shouldAnimate ? 1.42 - 0.42 * Math.pow(animIn, 0.7) : 1;
+      extraBlurPx += shouldAnimate ? (1 - animIn) * 8 : 0;
       alpha *= animIn;
       break;
     case 'typewriter': {
-      const progress = isPlaying ? clamp(localTime / 1.2, 0.05, 1) : 1;
+      const progress = shouldAnimate ? clamp(localTime / 1.2, 0.05, 1) : 1;
       const chars = Math.max(1, Math.floor(cfg.text.length * progress));
       visibleText = cfg.text.slice(0, chars);
       break;
@@ -249,11 +400,14 @@ function drawTextOverlay(
 
   ctx.save();
   ctx.globalAlpha = clamp(alpha, 0, 1);
+  if (extraBlurPx > 0.3) {
+    ctx.filter = `blur(${extraBlurPx.toFixed(1)}px)`;
+  }
   const scaleFactor = width / 1280;
-  const px = width / 2 + tf.x * width;
+  const px = width / 2 + tf.x * width + offsetX;
   const py = height / 2 + tf.y * height + offsetY;
   ctx.translate(px, py);
-  ctx.rotate((tf.rotation * Math.PI) / 180);
+  ctx.rotate(((tf.rotation + mp.rotationDeg + (transState?.rotation ?? 0)) * Math.PI) / 180);
   ctx.scale(tf.scale * scaleAnim, tf.scale * scaleAnim);
 
   const textStyle = cfg.textStyle ?? 'clean';
@@ -268,7 +422,9 @@ function drawTextOverlay(
     }
   };
 
-  applyTracking(textStyle === 'cinema' && letterSpacingPx === 0 ? Math.round(6 * scaleFactor) : letterSpacingPx);
+  applyTracking(
+    textStyle === 'cinema' && letterSpacingPx === 0 ? Math.round(6 * scaleFactor) : letterSpacingPx
+  );
   ctx.font = `${fontWeight} ${fontSize}px "${cfg.fontFamily}", "Plus Jakarta Sans", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -284,21 +440,34 @@ function drawTextOverlay(
   const boxH = (subText ? fontSize * 1.95 : fontSize * 1.45) + 18 * scaleFactor;
 
   const effectiveBgOpacity =
-    textStyle === 'badge' ? Math.max(0.75, cfg.bgOpacity) : cfg.bgOpacity;
+    textStyle === 'badge'
+      ? Math.max(0.78, cfg.bgOpacity)
+      : textStyle === 'glass'
+      ? Math.max(0.55, cfg.bgOpacity)
+      : cfg.bgOpacity;
 
-  if (effectiveBgOpacity > 0.02 || textStyle === 'badge') {
+  if (effectiveBgOpacity > 0.02 || textStyle === 'badge' || textStyle === 'glass' || textStyle === 'highlight') {
     ctx.save();
-    ctx.globalAlpha *= effectiveBgOpacity;
-    ctx.fillStyle = cfg.bgColor || '#0B1120';
-    const r = (textStyle === 'badge' ? 14 : 10) * scaleFactor;
-    ctx.beginPath();
-    ctx.roundRect(-boxW / 2, -boxH / 2, boxW, boxH, r);
-    ctx.fill();
-    if (textStyle === 'badge') {
-      ctx.globalAlpha = clamp(alpha, 0, 1);
-      ctx.lineWidth = Math.max(1.5, 2 * scaleFactor);
-      ctx.strokeStyle = cfg.color;
-      ctx.stroke();
+    const r = (textStyle === 'badge' ? 16 : textStyle === 'glass' ? 18 : 10) * scaleFactor;
+    if (textStyle === 'highlight') {
+      ctx.fillStyle = cfg.bgColor && cfg.bgColor !== '#090A0D' ? cfg.bgColor : '#F59E0B';
+      ctx.globalAlpha *= 0.92;
+      ctx.transform(1, 0, -0.14, 1, 0, 0);
+      ctx.beginPath();
+      ctx.roundRect(-boxW / 2, -boxH / 2, boxW, boxH, 8 * scaleFactor);
+      ctx.fill();
+    } else {
+      ctx.globalAlpha *= effectiveBgOpacity;
+      ctx.fillStyle = textStyle === 'glass' ? 'rgba(15, 23, 42, 0.72)' : cfg.bgColor || '#0B1120';
+      ctx.beginPath();
+      ctx.roundRect(-boxW / 2, -boxH / 2, boxW, boxH, r);
+      ctx.fill();
+      if (textStyle === 'badge' || textStyle === 'glass') {
+        ctx.globalAlpha = clamp(alpha, 0, 1) * (textStyle === 'glass' ? 0.55 : 0.95);
+        ctx.lineWidth = Math.max(1.5, 2 * scaleFactor);
+        ctx.strokeStyle = textStyle === 'glass' ? 'rgba(255,255,255,0.45)' : cfg.color;
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -320,6 +489,14 @@ function drawTextOverlay(
     ctx.shadowOffsetY = 4 * scaleFactor;
   }
 
+  if (textStyle === 'retro3d') {
+    const stepPx = Math.max(2, 4 * scaleFactor);
+    ctx.fillStyle = '#0f172a';
+    for (let layer = 4; layer >= 1; layer--) {
+      ctx.fillText(visibleText, layer * stepPx * 0.55, mainY + layer * stepPx * 0.55);
+    }
+  }
+
   ctx.lineJoin = 'round';
   ctx.lineWidth =
     textStyle === 'outline'
@@ -328,9 +505,21 @@ function drawTextOverlay(
       ? Math.max(1, 2 * scaleFactor)
       : Math.max(1, 3 * scaleFactor);
   ctx.strokeStyle = textStyle === 'neon' ? cfg.color : cfg.strokeColor;
-  ctx.strokeText(visibleText, 0, mainY);
-  ctx.fillStyle = cfg.color;
+  if (textStyle !== 'highlight') {
+    ctx.strokeText(visibleText, 0, mainY);
+  }
+
+  if (textStyle === 'gradient') {
+    const grad = ctx.createLinearGradient(-boxW * 0.45, mainY - fontSize * 0.4, boxW * 0.45, mainY + fontSize * 0.4);
+    grad.addColorStop(0, '#22d3ee');
+    grad.addColorStop(0.5, cfg.color === '#111827' ? '#ffffff' : cfg.color);
+    grad.addColorStop(1, '#f472b6');
+    ctx.fillStyle = grad;
+  } else {
+    ctx.fillStyle = textStyle === 'highlight' && cfg.color === '#F9FAFB' ? '#090A0D' : cfg.color;
+  }
   ctx.fillText(visibleText, 0, mainY);
+
   if (textStyle === 'neon') {
     ctx.shadowBlur = 6 * scaleFactor;
     ctx.fillStyle = '#ffffff';
@@ -358,6 +547,111 @@ function drawTextOverlay(
   ctx.restore();
 }
 
+function drawEmojiOverlay(
+  ctx: CanvasRenderingContext2D,
+  clip: TimelineClip,
+  width: number,
+  height: number,
+  localTime: number,
+  shouldAnimate: boolean,
+  previewTransitionOverride?: { clipId: string; type: TransitionType; progress: number } | null
+) {
+  const cfg = clip.emojiConfig;
+  if (!cfg) return;
+
+  const tf = evaluateKeyframes(clip, localTime);
+  const mp = evaluateMotionPresetTransform(clip.motionPreset, localTime, clip.duration);
+  const scaleFactor = width / 1280;
+  const isPreviewingTrans = previewTransitionOverride?.clipId === clip.id;
+  const activeTransType = isPreviewingTrans
+    ? previewTransitionOverride.type
+    : clip.transitionIn.type;
+  const transDur = Math.max(0.05, clip.transitionIn.duration);
+  const transProgress = isPreviewingTrans
+    ? previewTransitionOverride.progress
+    : clamp(localTime / transDur, 0, 1);
+  const transState =
+    activeTransType !== 'none' &&
+    (isPreviewingTrans || (shouldAnimate && localTime < transDur))
+      ? computeTransitionFrameState(activeTransType, transProgress, width, height)
+      : null;
+
+  let animOffsetY = 0;
+  let animScale = 1;
+  let animRot = 0;
+  let animAlpha = 1;
+
+  const tLoop = shouldAnimate ? localTime : localTime * 0.5;
+  switch (cfg.animation) {
+    case 'bounce':
+      animOffsetY = -Math.abs(Math.sin(tLoop * 5.2)) * 18 * scaleFactor;
+      break;
+    case 'float':
+      animOffsetY = Math.sin(tLoop * 2.8) * 11 * scaleFactor;
+      animRot = Math.sin(tLoop * 2.1) * 5;
+      break;
+    case 'pulse':
+      animScale = 1 + Math.sin(tLoop * 5.5) * 0.14;
+      break;
+    case 'spin':
+      animRot = (tLoop * 110) % 360;
+      break;
+    case 'pop': {
+      const p = shouldAnimate ? clamp(localTime / 0.35, 0, 1) : 1;
+      animScale = 0.5 + 0.5 * Math.sin(p * (Math.PI / 2));
+      animAlpha = p;
+      break;
+    }
+    case 'shake':
+      animRot = Math.sin(tLoop * 18) * 11;
+      break;
+    default:
+      break;
+  }
+
+  ctx.save();
+  ctx.globalAlpha = clamp(tf.opacity * mp.opacityMult * animAlpha * (transState?.opacity ?? 1), 0, 1);
+  const px = width / 2 + tf.x * width + mp.dx * width + (transState?.offsetX ?? 0);
+  const py = height / 2 + tf.y * height + mp.dy * height + animOffsetY + (transState?.offsetY ?? 0);
+  ctx.translate(px, py);
+  ctx.rotate(((tf.rotation + mp.rotationDeg + animRot + (transState?.rotation ?? 0)) * Math.PI) / 180);
+  const s = tf.scale * mp.scaleMult * animScale * (transState?.scale ?? 1);
+  ctx.scale(s * (tf.flipH ? -1 : 1), s * (tf.flipV ? -1 : 1));
+
+  const fontSize = Math.max(28, Math.round(cfg.size * scaleFactor));
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  if (cfg.style === 'badge') {
+    const boxR = fontSize * 0.85;
+    ctx.save();
+    ctx.fillStyle = cfg.bgColor || 'rgba(15, 23, 42, 0.82)';
+    ctx.beginPath();
+    ctx.roundRect(-boxR, -boxR, boxR * 2, boxR * 2, boxR * 0.42);
+    ctx.fill();
+    ctx.lineWidth = Math.max(2, 3 * scaleFactor);
+    ctx.strokeStyle = cfg.glowColor || '#22d3ee';
+    ctx.stroke();
+    ctx.restore();
+  } else if (cfg.style === 'neon') {
+    ctx.shadowColor = cfg.glowColor || '#22d3ee';
+    ctx.shadowBlur = 24 * scaleFactor;
+  } else if (cfg.style === 'sticker') {
+    // Crisp die-cut white sticker halo
+    ctx.font = `${fontSize}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(6, Math.round(fontSize * 0.16));
+    ctx.strokeStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+    ctx.shadowBlur = 10 * scaleFactor;
+    ctx.strokeText(cfg.emoji, 0, 0);
+  }
+
+  ctx.font = `${fontSize}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+  ctx.fillText(cfg.emoji, 0, 0);
+  ctx.restore();
+}
+
 export function renderCompositeFrame(options: RenderFrameOptions): HistogramData | null {
   const {
     ctx,
@@ -374,8 +668,13 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     selectedClipId,
     showSelectionBox,
     snapGuides,
+    previewLutOverride,
+    previewTransitionOverride,
+    animateEffects,
+    preferProxy,
     onAssetLoad,
   } = options;
+  const shouldAnimateEffects = Boolean(isPlaying || animateEffects);
 
   ctx.save();
   ctx.fillStyle = '#050608';
@@ -405,12 +704,38 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     const localTime = clamp(playhead - clip.startTime, 0, clip.duration);
 
     if (clip.kind === 'text') {
-      drawTextOverlay(ctx, clip, width, height, localTime, isPlaying);
+      drawTextOverlay(
+        ctx,
+        clip,
+        width,
+        height,
+        localTime,
+        shouldAnimateEffects,
+        previewTransitionOverride
+      );
+      continue;
+    }
+
+    if (clip.kind === 'emoji') {
+      drawEmojiOverlay(
+        ctx,
+        clip,
+        width,
+        height,
+        localTime,
+        shouldAnimateEffects,
+        previewTransitionOverride
+      );
       continue;
     }
 
     const asset = assetMap.get(clip.assetId);
     if (!asset) continue;
+
+    const effectiveGrade =
+      previewLutOverride && previewLutOverride.clipId === clip.id
+        ? { ...clip.colorGrade, lutId: previewLutOverride.lutId }
+        : clip.colorGrade;
 
     const vfx = clip.vfx;
     if (vfx?.cinemaBars > maxCinemaBars) {
@@ -418,71 +743,99 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     }
 
     const tf = evaluateKeyframes(clip, localTime);
+    const mp = evaluateMotionPresetTransform(clip.motionPreset, localTime, clip.duration);
+    const activeTransType =
+      previewTransitionOverride && previewTransitionOverride.clipId === clip.id
+        ? previewTransitionOverride.type
+        : clip.transitionIn.type;
     const transitionDur = Math.max(0.05, clip.transitionIn.duration);
-    const transProgress = clamp(localTime / transitionDur, 0, 1);
+    const transProgress =
+      previewTransitionOverride && previewTransitionOverride.clipId === clip.id
+        ? clamp(previewTransitionOverride.progress, 0, 1)
+        : clamp(localTime / transitionDur, 0, 1);
+    const isTransitionActive =
+      activeTransType !== 'none' &&
+      (localTime < transitionDur || previewTransitionOverride?.clipId === clip.id);
 
-    let transOpacity = 1;
-    let transOffsetX = 0;
-    let transOffsetY = 0;
-    let transScale = 1;
-    let transRotation = 0;
-    let radialClipRadius: number | null = null;
-    let glitchBoost = 0;
+    const transState = isTransitionActive
+      ? computeTransitionFrameState(activeTransType, transProgress, width, height)
+      : computeTransitionFrameState('none', 1, width, height);
 
-    if (clip.transitionIn.type !== 'none' && localTime < transitionDur) {
-      switch (clip.transitionIn.type) {
-        case 'crossDissolve':
-        case 'dipBlack':
-        case 'dipWhite':
-          transOpacity = transProgress;
-          break;
-        case 'slideLeft':
-          transOffsetX = (1 - Math.pow(transProgress, 0.5)) * width;
-          break;
-        case 'slideRight':
-          transOffsetX = -(1 - Math.pow(transProgress, 0.5)) * width;
-          break;
-        case 'slideUp':
-          transOffsetY = (1 - Math.pow(transProgress, 0.5)) * height;
-          break;
-        case 'zoomIn':
-          transScale = 0.72 + 0.28 * transProgress;
-          transOpacity = transProgress;
-          break;
-        case 'zoomOut':
-          transScale = 1.45 - 0.45 * transProgress;
-          transOpacity = transProgress;
-          break;
-        case 'whipPan':
-          transOffsetX = Math.sin((1 - transProgress) * Math.PI * 0.5) * width * 0.6;
-          break;
-        case 'spin':
-          transRotation = (1 - transProgress) * 180;
-          transScale = 0.55 + 0.45 * transProgress;
-          transOpacity = transProgress;
-          break;
-        case 'radialWipe':
-          radialClipRadius = transProgress * Math.hypot(width, height) * 0.65;
-          break;
-        case 'glitchCut':
-          glitchBoost = (1 - transProgress) * 85;
-          break;
+    // Draw outgoing adjacent clip underneath incoming transition clip (real A -> B cut transition)
+    if (isTransitionActive) {
+      const outgoingClip = clips.find(
+        (c) =>
+          c.id !== clip.id &&
+          c.trackId === clip.trackId &&
+          (c.kind === 'image' || c.kind === 'video') &&
+          Math.abs(c.startTime + c.duration - clip.startTime) <= 0.18 &&
+          !activeClips.some((ac) => ac.id === c.id)
+      );
+      if (outgoingClip) {
+        const outAsset = assetMap.get(outgoingClip.assetId);
+        if (outAsset) {
+          const outSrc = resolveRenderableAssetSrc(outAsset, preferProxy);
+          let outDrawable: CanvasImageSource | null = null;
+          let outSrcW = outAsset.width || 1280;
+          let outSrcH = outAsset.height || 720;
+          if (outAsset.kind === 'image') {
+            const img = cache.getImage(outSrc, onAssetLoad);
+            if (img) {
+              outDrawable = img;
+              outSrcW = img.naturalWidth || 1280;
+              outSrcH = img.naturalHeight || 720;
+            }
+          } else if (outAsset.kind === 'video') {
+            const vid = cache.getVideo(outSrc, onAssetLoad);
+            if (vid) {
+              outDrawable = vid;
+              outSrcW = vid.videoWidth || 1280;
+              outSrcH = vid.videoHeight || 720;
+            }
+          }
+          if (outDrawable) {
+            const outTf = evaluateKeyframes(outgoingClip, outgoingClip.duration);
+            ctx.save();
+            ctx.globalAlpha = clamp(outTf.opacity, 0, 1);
+            ctx.filter = buildCanvasFilterString(outgoingClip.colorGrade, outgoingClip.vfx);
+            ctx.translate(
+              width / 2 + outTf.x * width + transState.outgoingOffsetX,
+              height / 2 + outTf.y * height + transState.outgoingOffsetY
+            );
+            ctx.rotate((outTf.rotation * Math.PI) / 180);
+            ctx.scale(
+              outTf.scale * (outTf.flipH ? -1 : 1),
+              outTf.scale * (outTf.flipV ? -1 : 1)
+            );
+            drawCoverImage(ctx, outDrawable, outSrcW, outSrcH, width, height);
+            ctx.restore();
+          }
+        }
       }
     }
 
+    const transOpacity = transState.opacity * mp.opacityMult;
+    const transOffsetX = transState.offsetX + mp.dx * width;
+    const transOffsetY = transState.offsetY + mp.dy * height;
+    const transScale = transState.scale * mp.scaleMult;
+    const transRotation = transState.rotation + mp.rotationDeg;
+    const radialClipRadius = transState.radialRadius;
+    const glitchBoost = transState.glitchBoost;
+
+    const activeAssetSrc = resolveRenderableAssetSrc(asset, preferProxy);
     let drawable: CanvasImageSource | null = null;
     let srcW = asset.width || 1280;
     let srcH = asset.height || 720;
 
     if (asset.kind === 'image') {
-      const img = cache.getImage(asset.src, onAssetLoad);
+      const img = cache.getImage(activeAssetSrc, onAssetLoad);
       if (img) {
         drawable = img;
         srcW = img.naturalWidth || 1280;
         srcH = img.naturalHeight || 720;
       }
     } else if (asset.kind === 'video') {
-      const vid = cache.getVideo(asset.src, onAssetLoad);
+      const vid = cache.getVideo(activeAssetSrc, onAssetLoad);
       if (vid) {
         const progress01 = localTime / Math.max(0.05, clip.duration);
         const effSpeed = getEffectiveSpeedAtTime(clip.speed, clip.speedRamp, progress01);
@@ -499,8 +852,17 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
     }
 
     const effectiveVfx = vfx
-      ? { ...DEFAULT_VFX, ...vfx, glitch: Math.min(100, vfx.glitch + glitchBoost) }
-      : { ...DEFAULT_VFX, glitch: glitchBoost };
+      ? {
+          ...DEFAULT_VFX,
+          ...vfx,
+          glitch: Math.min(100, vfx.glitch + glitchBoost),
+          blur: Math.min(100, (vfx.blur ?? 0) + transState.blurPx * 4),
+        }
+      : {
+          ...DEFAULT_VFX,
+          glitch: glitchBoost,
+          blur: Math.min(100, transState.blurPx * 4),
+        };
 
     // Camera impact shake offset
     const shakeAmp = (effectiveVfx.shake ?? 0) > 1 ? (effectiveVfx.shake / 100) * 26 : 0;
@@ -510,19 +872,55 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
 
     const needsPixelPass =
       clip.chromaKey.enabled ||
-      (clip.colorGrade.grain ?? 0) > 1 ||
-      (clip.colorGrade.sharpness ?? 0) > 1 ||
+      (effectiveGrade.grain ?? 0) > 1 ||
+      (effectiveGrade.sharpness ?? 0) > 1 ||
       effectiveVfx.glitch > 1 ||
       effectiveVfx.distortion > 1 ||
       effectiveVfx.pixelate > 1 ||
       effectiveVfx.vhsScanlines > 1 ||
       (effectiveVfx.mirror ?? 0) > 1 ||
-      (effectiveVfx.duotone ?? 0) > 1;
+      (effectiveVfx.duotone ?? 0) > 1 ||
+      (effectiveVfx.prism ?? 0) > 1 ||
+      (effectiveVfx.nightVision ?? 0) > 1;
+
+    const featherPct = clip.feather ?? 0;
 
     ctx.save();
     if (radialClipRadius !== null) {
       ctx.beginPath();
       ctx.arc(width / 2, height / 2, radialClipRadius, 0, Math.PI * 2);
+      ctx.clip();
+    }
+    if (transState.curtainOpenRatio !== null) {
+      const openW = width * transState.curtainOpenRatio;
+      ctx.beginPath();
+      ctx.rect((width - openW) / 2, 0, openW, height);
+      ctx.clip();
+    }
+    if (transState.verticalSplitRatio !== null) {
+      const openH = height * transState.verticalSplitRatio;
+      ctx.beginPath();
+      ctx.rect(0, (height - openH) / 2, width, openH);
+      ctx.clip();
+    }
+    if (transState.diagonalProgress !== null) {
+      const d = transState.diagonalProgress;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(width * d * 2, 0);
+      ctx.lineTo(0, height * d * 2);
+      ctx.closePath();
+      ctx.clip();
+    }
+    if (transState.wipeXRatio !== null) {
+      ctx.beginPath();
+      ctx.rect(0, 0, width * transState.wipeXRatio, height);
+      ctx.clip();
+    }
+    if (transState.wipeRightRatio !== null) {
+      const w = width * transState.wipeRightRatio;
+      ctx.beginPath();
+      ctx.rect(width - w, 0, w, height);
       ctx.clip();
     }
     if (clip.mask && clip.mask !== 'none') {
@@ -547,13 +945,36 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
       ctx.clip();
     }
 
+    const compositeWithOptionalFeather = (drawSource: (targetCtx: CanvasRenderingContext2D) => void) => {
+      if (featherPct > 1) {
+        const fCanvas = cache.getFeatherCanvas(width, height);
+        const fCtx = fCanvas.getContext('2d');
+        if (fCtx) {
+          fCtx.clearRect(0, 0, width, height);
+          drawSource(fCtx);
+          applyMaskAndFeatherAlpha(fCtx, width, height, clip.mask, tf, featherPct);
+          ctx.save();
+          ctx.globalAlpha = clamp(tf.opacity * transOpacity, 0, 1);
+          ctx.globalCompositeOperation = clip.blendMode;
+          ctx.drawImage(fCanvas, 0, 0);
+          ctx.restore();
+          return;
+        }
+      }
+      ctx.save();
+      ctx.globalAlpha = clamp(tf.opacity * transOpacity, 0, 1);
+      ctx.globalCompositeOperation = clip.blendMode;
+      drawSource(ctx);
+      ctx.restore();
+    };
+
     if (needsPixelPass && drawable) {
       const off = cache.getOffscreenCanvas(width, height);
       const offCtx = off.getContext('2d', { willReadFrequently: true });
       if (offCtx) {
         offCtx.clearRect(0, 0, width, height);
         offCtx.save();
-        offCtx.filter = buildCanvasFilterString(clip.colorGrade, effectiveVfx);
+        offCtx.filter = buildCanvasFilterString(effectiveGrade, effectiveVfx);
         offCtx.translate(
           width / 2 + tf.x * width + transOffsetX + shakeX,
           height / 2 + tf.y * height + transOffsetY + shakeY
@@ -567,12 +988,12 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
         offCtx.restore();
 
         const imgData = offCtx.getImageData(0, 0, width, height);
-        applyPixelGradeAndChroma(imgData.data, clip.colorGrade, clip.chromaKey);
+        applyPixelGradeAndChroma(imgData.data, effectiveGrade, clip.chromaKey);
 
         let workingData = imgData.data;
-        if ((clip.colorGrade.sharpness ?? 0) > 1) {
+        if ((effectiveGrade.sharpness ?? 0) > 1) {
           const sharpBuf = new Uint8ClampedArray(workingData.length);
-          applySharpnessPass(workingData, sharpBuf, width, height, clip.colorGrade.sharpness);
+          applySharpnessPass(workingData, sharpBuf, width, height, effectiveGrade.sharpness);
           imgData.data.set(sharpBuf);
           workingData = imgData.data;
         }
@@ -583,7 +1004,9 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
           effectiveVfx.pixelate > 1 ||
           effectiveVfx.vhsScanlines > 1 ||
           (effectiveVfx.mirror ?? 0) > 1 ||
-          (effectiveVfx.duotone ?? 0) > 1;
+          (effectiveVfx.duotone ?? 0) > 1 ||
+          (effectiveVfx.prism ?? 0) > 1 ||
+          (effectiveVfx.nightVision ?? 0) > 1;
 
         if (hasSpatialVfx) {
           const vfxCanvas = cache.getVfxCanvas(width, height);
@@ -592,42 +1015,74 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
             const outImg = vfxCtx.createImageData(width, height);
             applyVfxPixelPass(workingData, outImg.data, width, height, effectiveVfx, playhead);
             vfxCtx.putImageData(outImg, 0, 0);
-            ctx.save();
-            ctx.globalAlpha = clamp(tf.opacity * transOpacity, 0, 1);
-            ctx.globalCompositeOperation = clip.blendMode;
-            ctx.drawImage(vfxCanvas, 0, 0);
-            ctx.restore();
+            compositeWithOptionalFeather((tCtx) => {
+              tCtx.drawImage(vfxCanvas, 0, 0);
+            });
           }
         } else {
           offCtx.putImageData(imgData, 0, 0);
-          ctx.save();
-          ctx.globalAlpha = clamp(tf.opacity * transOpacity, 0, 1);
-          ctx.globalCompositeOperation = clip.blendMode;
-          ctx.drawImage(off, 0, 0);
-          ctx.restore();
+          compositeWithOptionalFeather((tCtx) => {
+            tCtx.drawImage(off, 0, 0);
+          });
         }
       }
     } else {
-      ctx.save();
-      ctx.globalAlpha = clamp(tf.opacity * transOpacity, 0, 1);
-      ctx.globalCompositeOperation = clip.blendMode;
-      ctx.filter = buildCanvasFilterString(clip.colorGrade, effectiveVfx);
-      ctx.translate(
-        width / 2 + tf.x * width + transOffsetX + shakeX,
-        height / 2 + tf.y * height + transOffsetY + shakeY
-      );
-      ctx.rotate(((tf.rotation + transRotation + shakeRot) * Math.PI) / 180);
-      ctx.scale(
-        tf.scale * transScale * (tf.flipH ? -1 : 1),
-        tf.scale * transScale * (tf.flipV ? -1 : 1)
-      );
+      compositeWithOptionalFeather((tCtx) => {
+        tCtx.save();
+        tCtx.filter = buildCanvasFilterString(effectiveGrade, effectiveVfx);
+        tCtx.translate(
+          width / 2 + tf.x * width + transOffsetX + shakeX,
+          height / 2 + tf.y * height + transOffsetY + shakeY
+        );
+        tCtx.rotate(((tf.rotation + transRotation + shakeRot) * Math.PI) / 180);
+        tCtx.scale(
+          tf.scale * transScale * (tf.flipH ? -1 : 1),
+          tf.scale * transScale * (tf.flipV ? -1 : 1)
+        );
+        if (drawable) {
+          drawCoverImage(tCtx, drawable, srcW, srcH, width, height);
+        } else {
+          drawLegacyFormatFallback(tCtx, asset, width, height, localTime);
+        }
+        tCtx.restore();
+      });
+    }
 
-      if (drawable) {
+    // Cinema Directional Shutter-Angle Motion Blur VFX
+    if ((effectiveVfx.motionBlur ?? 0) > 1 && drawable) {
+      const mbIntensity = effectiveVfx.motionBlur ?? 0;
+      const prevTime = Math.max(0, localTime - 0.06);
+      const prevTf = evaluateKeyframes(clip, prevTime);
+      const prevMp = evaluateMotionPresetTransform(clip.motionPreset, prevTime, clip.duration);
+      const velPxX =
+        ((tf.x - prevTf.x) + (mp.dx - prevMp.dx)) * width;
+      const velPxY =
+        ((tf.y - prevTf.y) + (mp.dy - prevMp.dy)) * height;
+      const scaleVel =
+        tf.scale * mp.scaleMult - prevTf.scale * prevMp.scaleMult;
+      const mbEchoes = computeMotionBlurTrailOffsets({
+        velocityPxX: velPxX,
+        velocityPxY: velPxY,
+        scaleVel,
+        intensityPct: mbIntensity,
+        canvasWidth: width,
+        steps: 4,
+      });
+      const echoBlurPx = Math.max(1, (mbIntensity / 100) * 3.2);
+      for (const echo of mbEchoes) {
+        ctx.save();
+        ctx.globalAlpha = clamp(tf.opacity * transOpacity * echo.alpha, 0, 0.45);
+        ctx.filter = `blur(${echoBlurPx.toFixed(1)}px)`;
+        ctx.translate(
+          width / 2 + tf.x * width + transOffsetX + shakeX + echo.offsetX,
+          height / 2 + tf.y * height + transOffsetY + shakeY + echo.offsetY
+        );
+        ctx.rotate(((tf.rotation + transRotation + shakeRot) * Math.PI) / 180);
+        const es = clamp(tf.scale * transScale + echo.scaleDelta, 0.1, 5);
+        ctx.scale(es * (tf.flipH ? -1 : 1), es * (tf.flipV ? -1 : 1));
         drawCoverImage(ctx, drawable, srcW, srcH, width, height);
-      } else {
-        drawLegacyFormatFallback(ctx, asset, width, height, localTime);
+        ctx.restore();
       }
-      ctx.restore();
     }
 
     // Anamorphic Bloom / Halation Glow overlay
@@ -636,22 +1091,63 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
       ctx.globalCompositeOperation = 'screen';
       ctx.globalAlpha = clamp((effectiveVfx.bloom / 100) * 0.48, 0, 0.55);
       ctx.filter = `blur(${Math.round(8 + (effectiveVfx.bloom / 100) * 16)}px) brightness(135%)`;
-      ctx.translate(width / 2 + tf.x * width, height / 2 + tf.y * height);
-      ctx.scale(tf.scale, tf.scale);
+      ctx.translate(width / 2 + tf.x * width + mp.dx * width, height / 2 + tf.y * height + mp.dy * height);
+      ctx.scale(tf.scale * mp.scaleMult, tf.scale * mp.scaleMult);
       drawCoverImage(ctx, drawable, srcW, srcH, width, height);
+      ctx.restore();
+    }
+
+    // Warm 35mm Film Burn Flare VFX
+    if ((effectiveVfx.filmBurn ?? 0) > 1) {
+      const fb = clamp((effectiveVfx.filmBurn ?? 0) / 100, 0, 1);
+      const driftX = width * (0.12 + 0.08 * Math.sin(playhead * 2.4));
+      const driftY = height * (0.22 + 0.06 * Math.cos(playhead * 1.9));
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = fb * 0.78;
+      const g1 = ctx.createRadialGradient(
+        driftX,
+        driftY,
+        8,
+        driftX,
+        driftY,
+        Math.max(width, height) * 0.65
+      );
+      g1.addColorStop(0, 'rgba(255, 224, 150, 0.95)');
+      g1.addColorStop(0.32, 'rgba(249, 115, 22, 0.72)');
+      g1.addColorStop(0.68, 'rgba(225, 29, 72, 0.35)');
+      g1.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = g1;
+      ctx.fillRect(0, 0, width, height);
       ctx.restore();
     }
 
     ctx.restore();
 
-    if (
-      (clip.transitionIn.type === 'dipWhite' || clip.transitionIn.type === 'dipBlack') &&
-      localTime < transitionDur
-    ) {
-      const dipAlpha = Math.sin((1 - transProgress) * Math.PI * 0.5) * 0.85;
+    if (transState.flashAlpha > 0.01) {
       ctx.save();
-      ctx.fillStyle = clip.transitionIn.type === 'dipWhite' ? '#ffffff' : '#000000';
-      ctx.globalAlpha = clamp(dipAlpha, 0, 1);
+      ctx.fillStyle = transState.flashColor;
+      ctx.globalAlpha = clamp(transState.flashAlpha, 0, 1);
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+
+    if (transState.leakAlpha > 0.01) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = clamp(transState.leakAlpha, 0, 0.9);
+      const leakGrad = ctx.createRadialGradient(
+        width * 0.18,
+        height * 0.28,
+        12,
+        width * 0.35,
+        height * 0.45,
+        Math.max(width, height) * 0.85
+      );
+      leakGrad.addColorStop(0, 'rgba(255, 214, 120, 0.95)');
+      leakGrad.addColorStop(0.45, 'rgba(249, 115, 22, 0.65)');
+      leakGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = leakGrad;
       ctx.fillRect(0, 0, width, height);
       ctx.restore();
     }
@@ -670,6 +1166,19 @@ export function renderCompositeFrame(options: RenderFrameOptions): HistogramData
       radGrad.addColorStop(1, `rgba(0,0,0,${vigStrength.toFixed(2)})`);
       ctx.fillStyle = radGrad;
       ctx.fillRect(0, 0, width, height);
+    }
+
+    if (clip.neon?.enabled) {
+      const neonBox = getClipCanvasBox(clip, localTime, width, height);
+      renderNeonClipEffect(
+        ctx,
+        width,
+        height,
+        neonBox,
+        clip.neon,
+        playhead,
+        shouldAnimateEffects
+      );
     }
   }
 

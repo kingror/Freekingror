@@ -16,7 +16,13 @@ import {
   Scissors,
   SkipBack,
 } from 'lucide-react';
-import type { AspectRatio, MediaAsset, TimelineClip, TimelineTrack } from '../types/editor';
+import type {
+  AspectRatio,
+  MediaAsset,
+  TimelineClip,
+  TimelineTrack,
+  TransitionType,
+} from '../types/editor';
 import { MediaElementCache, renderCompositeFrame } from '../engine/compositor';
 import { rgbToHex, type HistogramData } from '../engine/colorEngine';
 import { clamp, evaluateKeyframes, formatTimecode, getCanvasDimensions } from '../engine/timelineMath';
@@ -53,6 +59,7 @@ interface PreviewStageProps {
   onSplitAtPlayhead: () => void;
   onSelectClip: (clipId: string) => void;
   onOpenTextEditor?: (clipId: string) => void;
+  onOpenEmojiEditor?: (clipId: string) => void;
   onTransformSelectedClip: (
     clipId: string,
     patch: { x?: number; y?: number; scale?: number; rotation?: number }
@@ -60,6 +67,9 @@ interface PreviewStageProps {
   onCommitClipHistory?: (preDragClips: TimelineClip[]) => void;
   onPickChromaColor: (hex: string) => void;
   onCancelEyedropper: () => void;
+  previewLutOverride?: { clipId: string; lutId: string } | null;
+  previewTransitionOverride?: { clipId: string; type: TransitionType; progress: number } | null;
+  preferProxy?: boolean;
 }
 
 const SHUTTLE_RATES = [0.5, 1, 1.5, 2] as const;
@@ -89,10 +99,14 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   onSplitAtPlayhead,
   onSelectClip,
   onOpenTextEditor,
+  onOpenEmojiEditor,
   onTransformSelectedClip,
   onCommitClipHistory,
   onPickChromaColor,
   onCancelEyedropper,
+  previewLutOverride = null,
+  previewTransitionOverride = null,
+  preferProxy = true,
 }) => {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -182,6 +196,9 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
       selectedClipId: selectedClip?.id ?? null,
       showSelectionBox: !isPlaying && !eyedropperActive && isSelectedVisualActive,
       snapGuides,
+      previewLutOverride,
+      previewTransitionOverride,
+      preferProxy,
       onAssetLoad: () => setRenderTick((n) => n + 1),
     });
 
@@ -201,6 +218,9 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
     isSelectedVisualActive,
     eyedropperActive,
     snapGuides,
+    previewLutOverride,
+    previewTransitionOverride,
+    preferProxy,
     dims.width,
     dims.height,
     renderTick,
@@ -243,6 +263,7 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
       assets,
       cache,
       isPlaying: false,
+      preferProxy: false,
       showSafeMargins: false,
       computeHistogram: false,
       showSelectionBox: false,
@@ -374,6 +395,9 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
     if (target?.kind === 'text' && onOpenTextEditor) {
       onSelectClip(target.id);
       onOpenTextEditor(target.id);
+    } else if (target?.kind === 'emoji' && onOpenEmojiEditor) {
+      onSelectClip(target.id);
+      onOpenEmojiEditor(target.id);
     }
   };
 

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import {
+  Activity,
   AlignHorizontalJustifyStart,
   ArrowRightLeft,
   ChevronLeft,
@@ -12,6 +13,8 @@ import {
   Magnet,
   Plus,
   Scissors,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
   Unlock,
   Volume2,
@@ -26,13 +29,20 @@ import type {
   TimelineClip,
   TimelineMarker,
   TimelineTrack,
+  TransitionType,
 } from '../types/editor';
 import {
   clampTrimEdit,
   computeSnapResult,
+  findTimelineClipSeams,
   formatShortTime,
   isClipCompatibleWithTrack,
+  type TimelineClipSeam,
 } from '../engine/timelineMath';
+import { TRANSITION_LIBRARY } from '../engine/transitionsLibrary';
+import { getTrackVolumePct } from '../engine/audioMixer';
+import type { LiveAudioLevelSnapshot } from '../engine/audioEngine';
+import { AudioMixerOverlay } from './AudioMixerOverlay';
 
 interface TimelinePanelProps {
   tracks: TimelineTrack[];
@@ -54,6 +64,7 @@ interface TimelinePanelProps {
   onOpenAddMedia: (kind: 'video' | 'audio') => void;
   onDeleteTrack: (trackId: string) => void;
   onAddMarker: () => void;
+  onAutoBeatMarkers?: () => void;
   onRemoveMarker: (markerId: string) => void;
   onCompactGaps: () => void;
   onMoveClip: (clipId: string, newStartTime: number, targetTrackId?: string) => void;
@@ -70,6 +81,26 @@ interface TimelinePanelProps {
     startTime: number
   ) => void;
   onDropFiles: (files: FileList, trackId: string, startTime: number) => void;
+  onDropTransitionOnSeam?: (
+    seam: TimelineClipSeam,
+    type: TransitionType,
+    duration: number
+  ) => void;
+  onOpenTransitionLibraryForSeam?: (seam: TimelineClipSeam) => void;
+  isDraggingTransitionFromLibrary?: boolean;
+  mixerOpen?: boolean;
+  onToggleMixer?: () => void;
+  masterVolumePct?: number;
+  masterMuted?: boolean;
+  isPlaying?: boolean;
+  getLiveAudioLevels?: () => LiveAudioLevelSnapshot;
+  onChangeTrackVolume?: (trackId: string, volumePct: number) => void;
+  onChangeTrackPan?: (trackId: string, pan: number) => void;
+  onCommitTracksHistory?: (preDragTracks: TimelineTrack[]) => void;
+  onChangeMasterVolume?: (volumePct: number) => void;
+  onToggleMasterMute?: () => void;
+  onAddAudioTrack?: () => void;
+  onResetMix?: () => void;
 }
 
 const TRACK_COLORS: Record<string, string> = {
@@ -107,6 +138,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onOpenAddMedia,
   onDeleteTrack,
   onAddMarker,
+  onAutoBeatMarkers,
   onRemoveMarker,
   onCompactGaps,
   onMoveClip,
@@ -118,8 +150,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onDeleteClip,
   onDropAsset,
   onDropFiles,
+  onDropTransitionOnSeam,
+  onOpenTransitionLibraryForSeam,
+  isDraggingTransitionFromLibrary = false,
+  mixerOpen = false,
+  onToggleMixer,
+  masterVolumePct = 100,
+  masterMuted = false,
+  isPlaying = false,
+  getLiveAudioLevels,
+  onChangeTrackVolume,
+  onChangeTrackPan,
+  onCommitTracksHistory,
+  onChangeMasterVolume,
+  onToggleMasterMute,
+  onAddAudioTrack,
+  onResetMix,
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const preDragTracksRef = useRef<TimelineTrack[] | null>(null);
   const trackRowHeight = 40;
   const [dragState, setDragState] = useState<{
     clipId: string;
@@ -139,6 +188,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     didMutate: boolean;
   } | null>(null);
   const [snapGuideTime, setSnapGuideTime] = useState<number | null>(null);
+  const [hoveredSeamId, setHoveredSeamId] = useState<string | null>(null);
   const [dropPreview, setDropPreview] = useState<{
     trackId: string;
     startTime: number;
@@ -147,6 +197,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   } | null>(null);
 
   const assetMap = new Map(assets.map((a) => [a.id, a]));
+  const transitionLabelMap = new Map(TRANSITION_LIBRARY.map((t) => [t.type, t]));
   const markerTimes = markers.map((m) => m.time);
   const timelineSpan = Math.max(20, totalDuration + 6);
   const timelineWidthPx = Math.round(timelineSpan * zoomPxPerSec);
@@ -393,11 +444,39 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     };
   };
 
+  const findNearestTrackSeam = (
+    track: TimelineTrack,
+    cursorTime: number
+  ): TimelineClipSeam | null => {
+    const trackSeams = findTimelineClipSeams(clips, [track]);
+    if (trackSeams.length === 0) return null;
+    let best: TimelineClipSeam | null = null;
+    let bestDist = Infinity;
+    for (const seam of trackSeams) {
+      const dist = Math.abs(seam.time - cursorTime);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = seam;
+      }
+    }
+    return best;
+  };
+
   const handleTrackDragOver = (e: React.DragEvent, track: TimelineTrack) => {
     if (track.locked) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     const cursorTime = clientXToTime(e.clientX);
+
+    if (e.dataTransfer.types.includes('application/x-rorn-transition')) {
+      const nearestSeam = findNearestTrackSeam(track, cursorTime);
+      if (nearestSeam) {
+        setHoveredSeamId(nearestSeam.id);
+      }
+      setDropPreview(null);
+      return;
+    }
+
     const slot = computeDropSlot(track, cursorTime);
     setDropPreview(slot);
   };
@@ -405,9 +484,31 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   const handleTrackDrop = (e: React.DragEvent, track: TimelineTrack) => {
     e.preventDefault();
     setDropPreview(null);
+    setHoveredSeamId(null);
     if (track.locked) return;
 
     const cursorTime = clientXToTime(e.clientX);
+
+    const transPayload = e.dataTransfer.getData('application/x-rorn-transition');
+    if (transPayload) {
+      try {
+        const parsed = JSON.parse(transPayload) as {
+          type?: TransitionType;
+          duration?: number;
+        };
+        if (parsed.type) {
+          const nearestSeam = findNearestTrackSeam(track, cursorTime);
+          if (nearestSeam && onDropTransitionOnSeam) {
+            onDropTransitionOnSeam(nearestSeam, parsed.type, parsed.duration ?? 0.7);
+            return;
+          }
+        }
+      } catch {
+        // Ignore malformed transition payload
+      }
+      return;
+    }
+
     const slot = computeDropSlot(track, cursorTime);
 
     const payload = e.dataTransfer.getData('application/x-rorn-asset');
@@ -430,7 +531,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
   return (
     <section
-      className="h-[248px] sm:h-[268px] lg:h-[284px] shrink-0 border-t border-white/10 bg-[#0D0F14] flex flex-col select-none"
+      className="relative h-[248px] sm:h-[268px] lg:h-[284px] shrink-0 border-t border-white/10 bg-[#0D0F14] flex flex-col select-none"
       aria-label="Multi-Track Timeline"
     >
       {/* Timeline Action Toolbar */}
@@ -507,6 +608,19 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             <Flag className="w-3 h-3" />
             <span className="hidden sm:inline">Marker</span>
           </button>
+          {onAutoBeatMarkers && (
+            <button
+              type="button"
+              onClick={onAutoBeatMarkers}
+              data-testid="timeline-beat-markers-btn"
+              aria-label="Auto-Detect Audio Beats"
+              title="Auto-Detect Audio Beat Markers from Waveform"
+              className="min-h-[30px] px-1.5 sm:px-2 flex items-center gap-1 rounded-md border border-orange-500/35 bg-orange-500/10 text-[11px] font-medium text-orange-200 hover:bg-orange-500/20 whitespace-nowrap"
+            >
+              <Activity className="w-3 h-3 text-orange-300" />
+              <span className="hidden sm:inline">Beats</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onCompactGaps}
@@ -536,6 +650,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           >
             <Plus className="w-3 h-3" /> Audio
           </button>
+
+          {onToggleMixer && (
+            <button
+              type="button"
+              onClick={onToggleMixer}
+              aria-label="Toggle Multi-Track Audio Mixer"
+              aria-pressed={mixerOpen}
+              data-testid="toggle-audio-mixer-btn"
+              title="Overlay Multi-Track Audio Mixer over Timeline"
+              className={`min-h-[30px] px-2 flex items-center gap-1 rounded-md border text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                mixerOpen
+                  ? 'border-emerald-400 bg-emerald-500/25 text-emerald-100 shadow-sm'
+                  : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+              }`}
+            >
+              <SlidersHorizontal className="w-3 h-3" />
+              <span>Mixer</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -607,10 +740,20 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                 style={{ height: `${trackRowHeight}px` }}
                 className="px-1.5 sm:px-2 flex items-center justify-between gap-1"
               >
-                <span className="text-[11px] font-medium text-zinc-200 truncate min-w-[20px]">
-                  <span className="sm:hidden font-mono-tabular">{tr.label.split(' ')[0]}</span>
-                  <span className="hidden sm:inline">{tr.label}</span>
-                </span>
+                <div className="min-w-[20px] flex items-center gap-1 truncate">
+                  <span className="text-[11px] font-medium text-zinc-200 truncate">
+                    <span className="sm:hidden font-mono-tabular">{tr.label.split(' ')[0]}</span>
+                    <span className="hidden sm:inline">{tr.label}</span>
+                  </span>
+                  {(tr.type === 'audio' || getTrackVolumePct(tr) !== 100) && (
+                    <span
+                      data-testid={`track-volume-badge-${tr.id}`}
+                      className="hidden sm:inline text-[9px] font-mono-tabular text-emerald-300/85 shrink-0"
+                    >
+                      {getTrackVolumePct(tr)}%
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-0.5 shrink-0">
                   <button
                     type="button"
@@ -683,6 +826,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           onDragLeave={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget as Node)) {
               setDropPreview(null);
+              setHoveredSeamId(null);
             }
           }}
           className="flex-1 overflow-x-auto overflow-y-visible studio-scroll relative bg-[#090B0F]"
@@ -744,6 +888,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             <div className="divide-y divide-white/5 relative">
               {tracks.map((tr) => {
                 const trackClips = clips.filter((c) => c.trackId === tr.id);
+                const trackSeams = findTimelineClipSeams(clips, [tr]);
                 const isDropTarget = dropPreview?.trackId === tr.id;
                 const isDragHovered = dragState?.hoverTrackId === tr.id;
                 return (
@@ -787,7 +932,10 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                       const isSelected = clip.id === selectedClipId;
                       const isDraggingThis = dragState?.clipId === clip.id;
                       const asset = assetMap.get(clip.assetId);
-                      const colorCls = TRACK_COLORS[tr.type] ?? TRACK_COLORS.video;
+                      const colorCls =
+                        clip.kind === 'emoji'
+                          ? 'bg-amber-500/20 border-amber-400/50 text-amber-100'
+                          : TRACK_COLORS[tr.type] ?? TRACK_COLORS.video;
                       const totalKfCount =
                         clip.keyframes.length + (clip.audioKeyframes?.length ?? 0);
 
@@ -875,7 +1023,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                             {/* Clip label & indicators */}
                             <div className="relative z-10 px-3.5 h-full flex items-center justify-between gap-1.5 pointer-events-none">
                               <span className="text-[11px] font-medium truncate drop-shadow-xs">
-                                {clip.name}
+                                {clip.emojiConfig ? `${clip.emojiConfig.emoji} ${clip.name}` : clip.name}
                               </span>
                               {(clip.audio.targetLufs !== undefined || clip.speed !== 1 || totalKfCount > 0) && (
                                 <div className="flex items-center gap-1.5 shrink-0 text-[10px] font-mono-tabular bg-[#090B0F]/75 px-1.5 py-0.5 rounded">
@@ -912,6 +1060,86 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                         </div>
                       );
                     })}
+
+                    {/* Between-Clip Transition Cut Seams (Drag & Drop or Click) */}
+                    {trackSeams.map((seam) => {
+                      const hasTrans = seam.transition.type !== 'none';
+                      const transDef = transitionLabelMap.get(seam.transition.type);
+                      const isSeamHovered = hoveredSeamId === seam.id;
+                      const seamX = seam.time * zoomPxPerSec;
+
+                      return (
+                        <button
+                          key={seam.id}
+                          type="button"
+                          data-testid={`timeline-seam-${seam.id}`}
+                          data-transition-type={seam.transition.type}
+                          aria-label={`Transition cut between ${seam.leftClipName} and ${seam.rightClipName}: ${
+                            hasTrans ? transDef?.label ?? seam.transition.type : 'Hard Cut'
+                          }`}
+                          title={
+                            hasTrans
+                              ? `${transDef?.label ?? seam.transition.type} (${seam.transition.duration}s) — drop transition or click to change`
+                              : 'Drop transition here or click to open Transition Library'
+                          }
+                          style={{ left: `${seamX}px` }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenTransitionLibraryForSeam?.(seam);
+                          }}
+                          onDragOver={(e) => {
+                            if (!e.dataTransfer.types.includes('application/x-rorn-transition')) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.dataTransfer.dropEffect = 'copy';
+                            setHoveredSeamId(seam.id);
+                          }}
+                          onDragLeave={(e) => {
+                            e.stopPropagation();
+                            if (hoveredSeamId === seam.id) setHoveredSeamId(null);
+                          }}
+                          onDrop={(e) => {
+                            const payload = e.dataTransfer.getData('application/x-rorn-transition');
+                            if (!payload) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setHoveredSeamId(null);
+                            try {
+                              const parsed = JSON.parse(payload) as {
+                                type?: TransitionType;
+                                duration?: number;
+                              };
+                              if (parsed.type && onDropTransitionOnSeam) {
+                                onDropTransitionOnSeam(seam, parsed.type, parsed.duration ?? 0.7);
+                              }
+                            } catch {
+                              // Ignore malformed transition drag payload
+                            }
+                          }}
+                          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 z-30 flex items-center justify-center gap-1 rounded-full border backdrop-blur-md transition-all cursor-pointer ${
+                            isSeamHovered
+                              ? 'h-8 px-2.5 scale-110 border-amber-300 bg-amber-500/85 text-zinc-950 font-bold shadow-[0_0_20px_rgba(245,158,11,0.75)]'
+                              : isDraggingTransitionFromLibrary
+                              ? 'h-7 px-2 border-cyan-300 bg-cyan-500/35 text-white animate-pulse shadow-[0_0_16px_rgba(34,211,238,0.55)]'
+                              : hasTrans
+                              ? 'h-5 px-1.5 border-cyan-400/70 bg-[#0B1220]/85 text-cyan-200 hover:bg-cyan-500/30 hover:scale-105 shadow-md'
+                              : 'w-5 h-5 border-white/25 bg-[#0B0F17]/80 text-zinc-300 hover:border-cyan-400 hover:text-cyan-200 hover:scale-110'
+                          }`}
+                        >
+                          <Sparkles className="w-2.5 h-2.5 shrink-0" />
+                          {(hasTrans || isSeamHovered || isDraggingTransitionFromLibrary) && (
+                            <span className="text-[9px] font-semibold whitespace-nowrap leading-none max-w-[66px] truncate">
+                              {isSeamHovered
+                                ? 'Drop Here'
+                                : hasTrans
+                                ? transDef?.label ?? seam.transition.type
+                                : 'Drop'}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 );
               })}
@@ -935,6 +1163,38 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Translucent Multi-Track Audio Mixer Overlay */}
+      <AudioMixerOverlay
+        open={mixerOpen}
+        tracks={tracks}
+        clips={clips}
+        assets={assets}
+        playhead={playhead}
+        isPlaying={isPlaying}
+        masterVolumePct={masterVolumePct}
+        masterMuted={masterMuted}
+        getLiveAudioLevels={getLiveAudioLevels}
+        onChangeTrackVolume={(trackId, vol) => onChangeTrackVolume?.(trackId, vol)}
+        onChangeTrackPan={(trackId, pan) => onChangeTrackPan?.(trackId, pan)}
+        onStartTrackDrag={() => {
+          if (!preDragTracksRef.current) {
+            preDragTracksRef.current = tracks.map((t) => ({ ...t }));
+          }
+        }}
+        onCommitTrackDrag={() => {
+          if (preDragTracksRef.current && onCommitTracksHistory) {
+            onCommitTracksHistory(preDragTracksRef.current);
+          }
+          preDragTracksRef.current = null;
+        }}
+        onToggleTrackFlag={onToggleTrackFlag}
+        onChangeMasterVolume={(vol) => onChangeMasterVolume?.(vol)}
+        onToggleMasterMute={() => onToggleMasterMute?.()}
+        onAddAudioTrack={() => onAddAudioTrack?.()}
+        onResetMix={() => onResetMix?.()}
+        onClose={() => onToggleMixer?.()}
+      />
     </section>
   );
 };

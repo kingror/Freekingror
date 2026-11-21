@@ -2,11 +2,14 @@ import type { AspectRatio, ExportSettings, MediaAsset, TimelineClip, TimelineTra
 import { MediaElementCache, renderCompositeFrame } from './compositor';
 import {
   clamp,
-  computeAudioGainAtTime,
-  evaluateAudioKeyframes,
   getCanvasDimensions,
   getProjectDuration,
 } from './timelineMath';
+import {
+  computeEffectiveAudioPan,
+  computeEffectiveTrackAndClipGain,
+  isTrackAudible,
+} from './audioMixer';
 
 export interface ExportResult {
   blobUrl: string;
@@ -55,14 +58,14 @@ export function pickSupportedMimeType(format: ExportSettings['format']): {
 
   const mp4Candidates = [
     'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1.4d002a,mp4a.40.2',
     'video/mp4;codecs=avc1,mp4a',
-    'video/mp4',
   ];
   const webmCandidates = [
-    'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm;codecs=vp9',
     'video/webm',
+    'video/webm;codecs=vp9,opus',
   ];
 
   if (format === 'mp4' || format === 'mov') {
@@ -155,13 +158,11 @@ async function renderMixedAudioBuffer(
 
   const trackMap = new Map(tracks.map((t) => [t.id, t]));
   const assetMap = new Map(assets.map((a) => [a.id, a]));
-  const hasSoloAudio = tracks.some((t) => t.type === 'audio' && t.solo);
 
   const audioClips = clips.filter((c) => {
     if (c.kind !== 'audio' && c.kind !== 'video') return false;
     const track = trackMap.get(c.trackId);
-    if (!track || track.muted || c.audio.muted) return false;
-    if (hasSoloAudio && !track.solo) return false;
+    if (!track || c.audio.muted || !isTrackAudible(track, tracks)) return false;
     const asset = assetMap.get(c.assetId);
     return Boolean(asset && asset.src && (asset.kind === 'audio' || asset.kind === 'video'));
   });
@@ -185,7 +186,8 @@ async function renderMixedAudioBuffer(
 
   for (const clip of audioClips) {
     const asset = assetMap.get(clip.assetId);
-    if (!asset?.src) continue;
+    const track = trackMap.get(clip.trackId);
+    if (!asset?.src || !track) continue;
 
     let decoded = decodedCache.get(asset.id);
     if (decoded === undefined) {
@@ -254,14 +256,14 @@ async function renderMixedAudioBuffer(
     for (let s = 0; s <= steps; s++) {
       const localT = Math.min(clip.duration, (s / steps) * clip.duration);
       const absT = clip.startTime + localT;
-      const g = computeAudioGainAtTime(clip, localT);
-      const { pan } = evaluateAudioKeyframes(clip, localT);
+      const g = computeEffectiveTrackAndClipGain(clip, track, tracks, localT, 100);
+      const panVal = computeEffectiveAudioPan(clip, track, localT);
       if (s === 0) {
         gainNode.gain.setValueAtTime(g, absT);
-        panner.pan.setValueAtTime(clamp(pan / 100, -1, 1), absT);
+        panner.pan.setValueAtTime(panVal, absT);
       } else {
         gainNode.gain.linearRampToValueAtTime(g, absT);
-        panner.pan.linearRampToValueAtTime(clamp(pan / 100, -1, 1), absT);
+        panner.pan.linearRampToValueAtTime(panVal, absT);
       }
     }
 
@@ -345,109 +347,177 @@ export async function renderProjectExport(params: {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
+  canvas.style.cssText =
+    'position:fixed;left:-99999px;top:0;width:1px;height:1px;opacity:0.001;pointer-events:none;';
+  document.body.appendChild(canvas);
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Unable to initialize 2D export canvas');
+  if (!ctx) {
+    canvas.remove();
+    throw new Error('Unable to initialize 2D export canvas');
+  }
 
-  const cache = new MediaElementCache();
-  const { mimeType, ext } = pickSupportedMimeType(settings.format);
-  const videoStream = canvas.captureStream(settings.fps);
+  try {
+    const cache = new MediaElementCache();
+    const runCapturePass = async (
+      withAudio: boolean
+    ): Promise<{ blob: Blob; mimeType: string; ext: string }> => {
+      const picked = withAudio
+        ? pickSupportedMimeType(settings.format)
+        : {
+            mimeType:
+              typeof MediaRecorder !== 'undefined' &&
+              MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+                ? 'video/webm;codecs=vp8'
+                : 'video/webm',
+            ext: settings.format === 'mp4' || settings.format === 'mov' ? 'webm' : settings.format,
+          };
+      const videoStream = canvas.captureStream(settings.fps);
+      const primaryVideoTrack = videoStream.getVideoTracks()[0] as
+        | (MediaStreamTrack & { requestFrame?: () => void })
+        | undefined;
 
-  // Mix multi-track audio alongside video stream if browser supports live AudioContext destination
-  let liveAudioCtx: AudioContext | null = null;
-  let liveAudioSrc: AudioBufferSourceNode | null = null;
-  const combinedTracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
+      let liveAudioCtx: AudioContext | null = null;
+      let liveAudioSrc: AudioBufferSourceNode | null = null;
+      const combinedTracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
 
-  if (settings.format !== 'gif') {
-    try {
-      const mixedBuffer = await renderMixedAudioBuffer(clips, tracks, assets, totalDuration);
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (mixedBuffer && AudioCtx) {
-        liveAudioCtx = new AudioCtx();
-        const dest = liveAudioCtx.createMediaStreamDestination();
-        const src = liveAudioCtx.createBufferSource();
-        src.buffer = mixedBuffer;
-        const simSpeed = Math.max(1, totalDuration / 6);
-        src.playbackRate.value = simSpeed;
-        src.connect(dest);
-        liveAudioSrc = src;
-        for (const track of dest.stream.getAudioTracks()) {
-          combinedTracks.push(track);
+      const targetExportWallSec = 2.6;
+      const simSpeed = Math.max(1, totalDuration / targetExportWallSec);
+
+      if (withAudio && settings.format !== 'gif') {
+        try {
+          const mixedBuffer = await renderMixedAudioBuffer(clips, tracks, assets, totalDuration);
+          const AudioCtx =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+          if (mixedBuffer && AudioCtx) {
+            liveAudioCtx = new AudioCtx();
+            if (liveAudioCtx.state === 'suspended') {
+              await liveAudioCtx.resume().catch(() => {});
+            }
+            const dest = liveAudioCtx.createMediaStreamDestination();
+            const src = liveAudioCtx.createBufferSource();
+            src.buffer = mixedBuffer;
+            src.playbackRate.value = clamp(simSpeed, 0.5, 4);
+            src.connect(dest);
+            liveAudioSrc = src;
+            for (const track of dest.stream.getAudioTracks()) {
+              combinedTracks.push(track);
+            }
+          }
+        } catch {
+          // Fallback cleanly to video-only stream if headless AudioContext refuses capture
         }
       }
-    } catch {
-      // Fallback cleanly to video-only stream if headless AudioContext refuses capture
-    }
-  }
 
-  const stream = new MediaStream(combinedTracks);
-  const chunks: BlobPart[] = [];
-  const recorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond: settings.bitrateMbps * 1_000_000,
-  });
+      const stream = new MediaStream(combinedTracks);
+      const chunks: BlobPart[] = [];
+      const recorder = new MediaRecorder(stream, {
+        mimeType: picked.mimeType,
+        videoBitsPerSecond: settings.bitrateMbps * 1_000_000,
+      });
 
-  recorder.ondataavailable = (ev) => {
-    if (ev.data && ev.data.size > 0) {
-      chunks.push(ev.data);
-    }
-  };
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          chunks.push(ev.data);
+        }
+      };
 
-  const stopPromise = new Promise<Blob>((resolve, reject) => {
-    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
-    recorder.onerror = () => reject(new Error('MediaRecorder encoding failed'));
-  });
+      const stopPromise = new Promise<Blob>((resolve, reject) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolve(new Blob(chunks, { type: picked.mimeType }));
+        };
+        recorder.onstop = finish;
+        recorder.onerror = () => {
+          if (settled) return;
+          settled = true;
+          reject(new Error('MediaRecorder encoding failed'));
+        };
+      });
 
-  recorder.start(200);
-  if (liveAudioSrc) {
-    try {
-      liveAudioSrc.start();
-    } catch {
-      // Ignore if AudioContext not started
-    }
-  }
+      recorder.start(200);
+      if (liveAudioSrc) {
+        try {
+          liveAudioSrc.start();
+        } catch {
+          // Ignore if AudioContext not started
+        }
+      }
 
-  const frameIntervalMs = 1000 / Math.min(30, settings.fps);
-  const simSpeed = Math.max(1, totalDuration / 6);
-  let t = 0;
+      const frameIntervalMs = 1000 / Math.min(24, settings.fps);
+      let t = 0;
 
-  while (t <= totalDuration) {
-    if (signal.aborted) {
-      recorder.stop();
-      liveAudioSrc?.stop();
+      while (t <= totalDuration) {
+        if (signal.aborted) {
+          if (recorder.state !== 'inactive') recorder.stop();
+          try {
+            liveAudioSrc?.stop();
+          } catch {
+            // Ignore
+          }
+          liveAudioCtx?.close().catch(() => {});
+          throw new Error('Export cancelled');
+        }
+        const frameStart = performance.now();
+        renderCompositeFrame({
+          ctx,
+          width,
+          height,
+          playhead: t,
+          clips,
+          tracks,
+          assets,
+          cache,
+          isPlaying: false,
+          animateEffects: true,
+          preferProxy: false,
+          showSafeMargins: false,
+          computeHistogram: false,
+        });
+        primaryVideoTrack?.requestFrame?.();
+        onProgress(Math.min(98, Math.round((t / totalDuration) * 100)));
+        const elapsed = performance.now() - frameStart;
+        await new Promise((r) => setTimeout(r, Math.max(4, frameIntervalMs - elapsed)));
+        t += (frameIntervalMs / 1000) * simSpeed;
+      }
+
+      if (recorder.state !== 'inactive') {
+        try {
+          recorder.requestData?.();
+        } catch {
+          // Ignore requestData if unsupported
+        }
+        recorder.stop();
+      }
+      const blob = await stopPromise;
+      try {
+        liveAudioSrc?.stop();
+      } catch {
+        // Ignore
+      }
       liveAudioCtx?.close().catch(() => {});
-      throw new Error('Export cancelled');
+      return { blob, mimeType: picked.mimeType, ext: picked.ext };
+    };
+
+    let captured = await runCapturePass(true);
+    if (captured.blob.size === 0) {
+      captured = await runCapturePass(false);
     }
-    renderCompositeFrame({
-      ctx,
-      width,
-      height,
-      playhead: t,
-      clips,
-      tracks,
-      assets,
-      cache,
-      isPlaying: false,
-      showSafeMargins: false,
-      computeHistogram: false,
-    });
-    onProgress(Math.min(98, Math.round((t / totalDuration) * 100)));
-    await new Promise((r) => setTimeout(r, frameIntervalMs));
-    t += (frameIntervalMs / 1000) * simSpeed;
+    if (!captured.blob || captured.blob.size === 0) {
+      throw new Error('Video encoder produced an empty stream. Try switching format to WEBM.');
+    }
+    onProgress(100);
+
+    return {
+      blobUrl: URL.createObjectURL(captured.blob),
+      blob: captured.blob,
+      filename: `${safeSlug}_${settings.resolution}.${captured.ext}`,
+      mimeType: captured.mimeType,
+      sizeBytes: captured.blob.size,
+    };
+  } finally {
+    canvas.remove();
   }
-
-  recorder.stop();
-  liveAudioSrc?.stop();
-  liveAudioCtx?.close().catch(() => {});
-  const finalBlob = await stopPromise;
-  onProgress(100);
-
-  return {
-    blobUrl: URL.createObjectURL(finalBlob),
-    blob: finalBlob,
-    filename: `${safeSlug}_${settings.resolution}.${ext}`,
-    mimeType,
-    sizeBytes: finalBlob.size,
-  };
 }

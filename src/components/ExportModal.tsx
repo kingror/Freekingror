@@ -17,7 +17,13 @@ import {
   type ExportResult,
 } from '../engine/exporter';
 import { getProjectDuration } from '../engine/timelineMath';
-import { saveExportToDeviceGallery, shareExportedMedia } from '../engine/googleAds';
+import {
+  consumeAdFreePassExport,
+  formatAdPassRemaining,
+  getAdPassStatus,
+  saveExportToDeviceGallery,
+  shareExportedMedia,
+} from '../engine/googleAds';
 import { GoogleVideoAdGate } from './GoogleVideoAdGate';
 import { GalleryExportSuccessView } from './GalleryExportSuccessView';
 
@@ -56,13 +62,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [result, setResult] = useState<ExportResult | null>(null);
   const [adUnlocked, setAdUnlocked] = useState(false);
   const [verifiedAdUnitId, setVerifiedAdUnitId] = useState('');
+  const [adPassBadge, setAdPassBadge] = useState<string | null>(null);
   const [galleryMsg, setGalleryMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
-  const handleAdUnlock = useCallback((adUnitId: string) => {
+  const handleAdUnlock = useCallback((adUnitId: string, passLabel?: string) => {
     setVerifiedAdUnitId(adUnitId);
     setAdUnlocked(true);
+    setAdPassBadge(passLabel || 'Ad-Free Pro Pass Activated');
   }, []);
 
   if (!open) return null;
@@ -70,6 +78,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const durationSec = Math.max(1, getProjectDuration(clips));
   const estMB = estimateExportSizeMB(durationSec, settings.bitrateMbps, settings.format);
   const capabilities = getRealExportCapabilities(settings.format);
+  const livePass = getAdPassStatus();
 
   const handleStartExport = async () => {
     abortRef.current?.abort();
@@ -79,8 +88,20 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     setProgress(0);
     setErrorMsg('');
     setResult(null);
-    setAdUnlocked(false);
-    setVerifiedAdUnitId('');
+
+    const activePass = getAdPassStatus();
+    if (activePass.hasActivePass) {
+      const nextPass = consumeAdFreePassExport();
+      setAdUnlocked(true);
+      setVerifiedAdUnitId(activePass.lastAdUnitId);
+      setAdPassBadge(
+        `Ad-Free Pass Active · ${nextPass.remainingExports} exports / ${formatAdPassRemaining(activePass.remainingMs)} left`
+      );
+    } else {
+      setAdUnlocked(false);
+      setVerifiedAdUnitId('');
+      setAdPassBadge(null);
+    }
 
     try {
       const res = await renderProjectExport({
@@ -391,19 +412,41 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 </div>
               )}
 
-              {/* Step 2: Mandatory Google Test Video Ad BEFORE Save to Gallery & Share */}
+              {livePass.hasActivePass && status === 'idle' && (
+                <div
+                  data-testid="ad-pass-status-banner"
+                  className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] font-medium text-emerald-200 flex items-center justify-between gap-2"
+                >
+                  <span>Ad-Free Export Pass Active (No Waiting)</span>
+                  <span className="font-mono-tabular text-emerald-300">
+                    {livePass.remainingExports} exports · {formatAdPassRemaining(livePass.remainingMs)}
+                  </span>
+                </div>
+              )}
+
+              {/* Step 2: Non-intrusive Google Video Ad Pass Gate (skipped automatically when pass is active) */}
               {status === 'done' && result && !adUnlocked && (
                 <GoogleVideoAdGate filename={result.filename} onUnlock={handleAdUnlock} />
               )}
 
               {/* Step 3: Unlocked Save to Gallery + Native Share Panel */}
               {status === 'done' && result && adUnlocked && (
-                <GalleryExportSuccessView
-                  result={result}
-                  projectTitle={projectTitle}
-                  verifiedAdUnitId={verifiedAdUnitId}
-                  onSavedToGallery={onSaveToGallery}
-                />
+                <div className="space-y-2">
+                  {adPassBadge && (
+                    <div
+                      data-testid="export-ad-pass-badge"
+                      className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-200"
+                    >
+                      {adPassBadge}
+                    </div>
+                  )}
+                  <GalleryExportSuccessView
+                    result={result}
+                    projectTitle={projectTitle}
+                    verifiedAdUnitId={verifiedAdUnitId}
+                    onSavedToGallery={onSaveToGallery}
+                  />
+                </div>
               )}
 
               {status === 'error' && (

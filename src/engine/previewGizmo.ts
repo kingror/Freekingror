@@ -41,8 +41,22 @@ export function getClipCanvasBox(
   const cx = width / 2 + tf.x * width;
   const cy = height / 2 + tf.y * height;
 
-  const baseW = clip.kind === 'text' ? width * 0.48 : width * 0.94;
-  const baseH = clip.kind === 'text' ? height * 0.18 : height * 0.94;
+  const emojiSizeRatio =
+    clip.kind === 'emoji'
+      ? clamp(((clip.emojiConfig?.size ?? 112) * 1.45) / 1280, 0.08, 0.35)
+      : 0;
+  const baseW =
+    clip.kind === 'emoji'
+      ? Math.max(88, width * emojiSizeRatio)
+      : clip.kind === 'text'
+      ? width * 0.48
+      : width * 0.94;
+  const baseH =
+    clip.kind === 'emoji'
+      ? Math.max(88, width * emojiSizeRatio)
+      : clip.kind === 'text'
+      ? height * 0.18
+      : height * 0.94;
   const boxW = Math.max(48, baseW * safeScale);
   const boxH = Math.max(36, baseH * safeScale);
 

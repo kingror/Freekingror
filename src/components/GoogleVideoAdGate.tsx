@@ -1,42 +1,74 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, Film, Play, ShieldCheck, SkipForward, Volume2, VolumeX } from 'lucide-react';
+import {
+  CheckCircle2,
+  Crown,
+  Film,
+  Play,
+  SkipForward,
+  Sparkles,
+  Volume2,
+  VolumeX,
+  Zap,
+} from 'lucide-react';
 import {
   GOOGLE_ADMOB_INTERSTITIAL_VIDEO_TEST_ID,
+  GOOGLE_ADMOB_REWARDED_INTERSTITIAL_TEST_ID,
   GOOGLE_ADMOB_REWARDED_VIDEO_TEST_ID,
+  consumeCourtesyFreeExport,
+  getAdPassStatus,
   getGoogleTestAdUnit,
   loadGoogleImaSdk,
+  recordVideoAdRewardCompleted,
   type GoogleAdFormat,
 } from '../engine/googleAds';
 
 interface GoogleVideoAdGateProps {
   filename: string;
-  onUnlock: (adUnitId: string) => void;
+  onUnlock: (adUnitId: string, passLabel?: string) => void;
 }
 
 export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, onUnlock }) => {
   const [adFormat, setAdFormat] = useState<GoogleAdFormat>('rewarded');
   const unit = getGoogleTestAdUnit(adFormat);
   const [countdown, setCountdown] = useState<number>(unit.skipAfterSec);
-  const [sdkStatus, setSdkStatus] = useState<'initializing' | 'ima-live' | 'vast-preview'>('initializing');
+  const [sdkStatus, setSdkStatus] = useState<'initializing' | 'ima-live' | 'vast-preview'>(
+    'initializing'
+  );
   const [muted, setMuted] = useState<boolean>(true);
   const [unlocked, setUnlocked] = useState<boolean>(false);
+  const [courtesyAvailable, setCourtesyAvailable] = useState<boolean>(
+    () => getAdPassStatus().courtesyGraceAvailable
+  );
 
   const adContainerRef = useRef<HTMLDivElement | null>(null);
   const videoStubRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const onUnlockRef = useRef(onUnlock);
+  const rewardClaimedRef = useRef(false);
+  onUnlockRef.current = onUnlock;
+
+  const completeWithReward = () => {
+    if (rewardClaimedRef.current) return;
+    rewardClaimedRef.current = true;
+    setUnlocked(true);
+    recordVideoAdRewardCompleted(adFormat, unit.adUnitId);
+    onUnlockRef.current(unit.adUnitId, unit.passLabel);
+  };
 
   // Attempt genuine Google IMA HTML5 SDK initialization with safe fallback
   useEffect(() => {
     let cancelled = false;
+    rewardClaimedRef.current = false;
     setSdkStatus('initializing');
     setCountdown(unit.skipAfterSec);
     setUnlocked(false);
+    setCourtesyAvailable(getAdPassStatus().courtesyGraceAvailable);
 
     let adsManager: { destroy?: () => void } | null = null;
     let adsLoader: { destroy?: () => void } | null = null;
 
     const initIma = async () => {
-      const ok = await loadGoogleImaSdk(2800);
+      const ok = await loadGoogleImaSdk(2400);
       if (cancelled) return;
 
       const googleObj = (
@@ -47,7 +79,11 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
                 initialize: () => void;
               };
               AdsLoader: new (container: unknown) => {
-                addEventListener: (event: string, cb: (ev: unknown) => void, capture?: boolean) => void;
+                addEventListener: (
+                  event: string,
+                  cb: (ev: unknown) => void,
+                  capture?: boolean
+                ) => void;
                 requestAds: (req: unknown) => void;
                 destroy?: () => void;
               };
@@ -72,7 +108,10 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
 
       try {
         const ima = googleObj.ima;
-        const displayContainer = new ima.AdDisplayContainer(adContainerRef.current, videoStubRef.current);
+        const displayContainer = new ima.AdDisplayContainer(
+          adContainerRef.current,
+          videoStubRef.current
+        );
         displayContainer.initialize();
         const loader = new ima.AdsLoader(displayContainer);
         adsLoader = loader;
@@ -93,18 +132,22 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
             if (!cancelled) setSdkStatus('ima-live');
           });
           mgr.addEventListener(ima.AdEvent.Type.COMPLETE, () => {
-            if (!cancelled) {
+            if (!cancelled && !rewardClaimedRef.current) {
+              rewardClaimedRef.current = true;
+              recordVideoAdRewardCompleted(adFormat, unit.adUnitId);
               setUnlocked(true);
-              onUnlock(unit.adUnitId);
+              onUnlockRef.current(unit.adUnitId, unit.passLabel);
             }
           });
           mgr.addEventListener(ima.AdEvent.Type.SKIPPED, () => {
-            if (!cancelled) {
+            if (!cancelled && !rewardClaimedRef.current) {
+              rewardClaimedRef.current = true;
+              recordVideoAdRewardCompleted(adFormat, unit.adUnitId);
               setUnlocked(true);
-              onUnlock(unit.adUnitId);
+              onUnlockRef.current(unit.adUnitId, unit.passLabel);
             }
           });
-          mgr.init(420, 210, ima.ViewMode.NORMAL);
+          mgr.init(420, 180, ima.ViewMode.NORMAL);
           mgr.start();
           setSdkStatus('ima-live');
         });
@@ -116,7 +159,7 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
         const req = new ima.AdsRequest();
         req.adTagUrl = `${unit.vastTagUrl}${Date.now()}`;
         req.linearAdSlotWidth = 420;
-        req.linearAdSlotHeight = 210;
+        req.linearAdSlotHeight = 180;
         loader.requestAds(req);
       } catch {
         setSdkStatus('vast-preview');
@@ -134,9 +177,9 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
         // Ignore cleanup exceptions
       }
     };
-  }, [adFormat, unit.adUnitId, unit.skipAfterSec, unit.vastTagUrl, onUnlock]);
+  }, [adFormat, unit.adUnitId, unit.skipAfterSec, unit.vastTagUrl, unit.passLabel]);
 
-  // Wall-clock accurate countdown timer for test ad skip / unlock
+  // Short non-intrusive countdown
   useEffect(() => {
     if (unlocked) return;
     const deadline = Date.now() + unit.skipAfterSec * 1000;
@@ -146,11 +189,11 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
       if (rem <= 0) {
         window.clearInterval(timer);
       }
-    }, 200);
+    }, 150);
     return () => window.clearInterval(timer);
   }, [adFormat, unit.skipAfterSec, unlocked]);
 
-  // Smooth animated preview on fallback VAST canvas when IMA slot is offline/blocked
+  // Smooth animated preview on fallback VAST canvas
   useEffect(() => {
     if (sdkStatus === 'ima-live') return;
     const canvas = canvasRef.current;
@@ -169,54 +212,49 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
       const w = canvas.width;
       const h = canvas.height;
       const grad = ctx.createLinearGradient(0, 0, w, h);
-      grad.addColorStop(0, '#0f172a');
-      grad.addColorStop(0.55, '#1e293b');
-      grad.addColorStop(1, '#090d16');
+      grad.addColorStop(0, '#0b1120');
+      grad.addColorStop(0.55, '#111c33');
+      grad.addColorStop(1, '#070a12');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, w, h);
 
-      // Animated cinematic light wave
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+      ctx.strokeStyle = 'rgba(34, 211, 238, 0.35)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       for (let x = 0; x <= w; x += 12) {
-        const y = h * 0.5 + Math.sin(x * 0.025 + t * 2.8) * 24;
+        const y = h * 0.5 + Math.sin(x * 0.025 + t * 2.8) * 20;
         if (x === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
 
       ctx.fillStyle = '#f8fafc';
-      ctx.font = '700 18px "Plus Jakarta Sans", sans-serif';
+      ctx.font = '700 16px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Google Video Ads · Official Test Ad', w / 2, h * 0.42);
+      ctx.fillText('RORN Sponsor Clip · Ad-Free Pass Reward', w / 2, h * 0.38);
 
-      ctx.fillStyle = '#fbbf24';
-      ctx.font = '600 12px "JetBrains Mono", monospace';
-      ctx.fillText(unit.adUnitId, w / 2, h * 0.56);
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '600 11px "JetBrains Mono", monospace';
+      ctx.fillText(unit.adUnitId, w / 2, h * 0.53);
 
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '500 11px "Plus Jakarta Sans", sans-serif';
-      ctx.fillText(
-        `Ad verifies before saving & sharing ${filename}`,
-        w / 2,
-        h * 0.72
-      );
+      ctx.fillStyle = '#34d399';
+      ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(`${unit.passLabel} · ${filename}`, w / 2, h * 0.69);
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [sdkStatus, unit.adUnitId, filename]);
+  }, [sdkStatus, unit.adUnitId, unit.passLabel, filename]);
 
   return (
     <div
-      className="rounded-2xl border border-amber-500/35 bg-[#0C0F16] p-3.5 space-y-3"
+      className="rounded-2xl border border-cyan-500/30 bg-[#0B0F18] p-3.5 space-y-2.5"
       data-testid="google-video-ad-gate"
     >
-      <div className="space-y-1">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300 min-w-0">
-            <ShieldCheck className="w-4 h-4 shrink-0" />
-            <span className="truncate">Google Video Ad Required Before Save & Share</span>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300 min-w-0">
+            <Crown className="w-4 h-4 shrink-0 text-amber-400" />
+            <span className="truncate">Unlock 20m Ad-Free Pro Export Pass</span>
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <button
@@ -224,34 +262,49 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
               onClick={() => setAdFormat('rewarded')}
               className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
                 adFormat === 'rewarded'
-                  ? 'bg-amber-500 text-zinc-950'
+                  ? 'bg-cyan-400 text-zinc-950'
                   : 'bg-white/5 text-zinc-400 hover:text-white'
               }`}
               title={GOOGLE_ADMOB_REWARDED_VIDEO_TEST_ID}
             >
-              Rewarded
+              Rewarded (5x)
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdFormat('rewardedInterstitial')}
+              className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+                adFormat === 'rewardedInterstitial'
+                  ? 'bg-cyan-400 text-zinc-950'
+                  : 'bg-white/5 text-zinc-400 hover:text-white'
+              }`}
+              title={GOOGLE_ADMOB_REWARDED_INTERSTITIAL_TEST_ID}
+            >
+              Hybrid (3x)
             </button>
             <button
               type="button"
               onClick={() => setAdFormat('interstitial')}
               className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
                 adFormat === 'interstitial'
-                  ? 'bg-amber-500 text-zinc-950'
+                  ? 'bg-cyan-400 text-zinc-950'
                   : 'bg-white/5 text-zinc-400 hover:text-white'
               }`}
               title={GOOGLE_ADMOB_INTERSTITIAL_VIDEO_TEST_ID}
             >
-              Interstitial
+              Quick (2s)
             </button>
           </div>
         </div>
-        <p className="text-[11px] font-mono-tabular text-zinc-300">
-          Test Unit ID: <span className="text-amber-300">{unit.adUnitId}</span>
-        </p>
+        <div className="flex items-center justify-between gap-2 text-[11px] font-mono-tabular text-zinc-400">
+          <span className="truncate text-cyan-200/90">{unit.adUnitId}</span>
+          <span className="text-emerald-300 font-sans font-medium shrink-0">
+            {unit.passLabel}
+          </span>
+        </div>
       </div>
 
       {/* Video Ad Viewport */}
-      <div className="relative w-full h-[184px] rounded-xl overflow-hidden border border-white/10 bg-black">
+      <div className="relative w-full h-[144px] sm:h-[160px] rounded-xl overflow-hidden border border-white/10 bg-black">
         <video
           ref={videoStubRef}
           playsInline
@@ -263,75 +316,83 @@ export const GoogleVideoAdGate: React.FC<GoogleVideoAdGateProps> = ({ filename, 
           className={`absolute inset-0 ${sdkStatus === 'ima-live' ? 'z-10' : 'pointer-events-none opacity-0'}`}
         />
         {sdkStatus !== 'ima-live' && (
-          <canvas
-            ref={canvasRef}
-            width={480}
-            height={210}
-            className="w-full h-full block"
-          />
+          <canvas ref={canvasRef} width={480} height={190} className="w-full h-full block" />
         )}
 
-        {/* Ad Overlay Bar */}
-        <div className="absolute top-2.5 left-2.5 right-2.5 z-20 flex items-center justify-between pointer-events-none">
-          <span className="px-2 py-0.5 rounded bg-black/75 text-[10px] font-mono-tabular text-amber-300 border border-amber-500/30">
-            Ad · {unit.label}
+        <div className="absolute top-2 left-2 right-2 z-20 flex items-center justify-between pointer-events-none">
+          <span className="px-2 py-0.5 rounded bg-black/75 text-[10px] font-mono-tabular text-cyan-300 border border-cyan-500/30">
+            Google Ads · {unit.label}
           </span>
           <button
             type="button"
             onClick={() => setMuted((m) => !m)}
             aria-label={muted ? 'Unmute Ad Audio' : 'Mute Ad Audio'}
-            className="pointer-events-auto min-h-[30px] min-w-[30px] flex items-center justify-center rounded-lg bg-black/70 text-zinc-200 hover:text-white"
+            className="pointer-events-auto min-h-[28px] min-w-[28px] flex items-center justify-center rounded-lg bg-black/70 text-zinc-200 hover:text-white"
           >
             {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
           </button>
         </div>
 
-        <div className="absolute bottom-2.5 left-2.5 right-2.5 z-20 flex items-center justify-between gap-2">
-          <span className="text-[10px] font-mono-tabular text-zinc-300 bg-black/70 px-2 py-1 rounded">
-            <Film className="w-3 h-3 inline mr-1 text-sky-400" />
-            {sdkStatus === 'ima-live' ? 'Google IMA VAST Stream' : 'Google VAST Test Video'}
+        <div className="absolute bottom-2 left-2 right-2 z-20 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-mono-tabular text-zinc-300 bg-black/75 px-2 py-1 rounded">
+            <Film className="w-3 h-3 inline mr-1 text-cyan-400" />
+            {sdkStatus === 'ima-live' ? 'Google IMA Live' : 'VAST Test Preview'}
           </span>
 
           {countdown > 0 ? (
             <span className="px-2.5 py-1 rounded-lg bg-black/80 text-[11px] font-mono-tabular text-zinc-200 border border-white/15">
-              Unlocking in {countdown}s
+              Ready in {countdown}s
             </span>
           ) : (
             <button
               type="button"
-              onClick={() => {
-                setUnlocked(true);
-                onUnlock(unit.adUnitId);
-              }}
-              className="px-3 py-1.5 rounded-lg bg-emerald-500 text-zinc-950 text-xs font-semibold hover:bg-emerald-400 flex items-center gap-1.5 shadow-lg min-h-[36px]"
+              data-testid="ad-claim-pass-btn"
+              onClick={completeWithReward}
+              className="px-3 py-1.5 rounded-lg bg-emerald-500 text-zinc-950 text-xs font-semibold hover:bg-emerald-400 flex items-center gap-1.5 shadow-lg min-h-[34px]"
             >
               <SkipForward className="w-3.5 h-3.5" />
-              <span>Unlock Save & Share</span>
+              <span>Claim Ad-Free Pass & Save</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Explicit action fallback when countdown finishes */}
-      <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
-        <span>
-          {countdown > 0
-            ? 'Watch the Google Test Video Ad to unlock Gallery Save & Share.'
-            : 'Ad verified! Continue to Save to Gallery & Share.'}
+      {/* Zero-frustration creator controls */}
+      <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400 flex-wrap">
+        <span className="flex items-center gap-1 text-zinc-300">
+          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          Watch once = next 5 saves have zero ads.
         </span>
-        {countdown === 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              setUnlocked(true);
-              onUnlock(unit.adUnitId);
-            }}
-            className="text-emerald-300 hover:text-emerald-200 font-semibold flex items-center gap-1 shrink-0"
-          >
-            {unlocked ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-            Continue
-          </button>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {courtesyAvailable && countdown > 0 && (
+            <button
+              type="button"
+              data-testid="ad-courtesy-skip-btn"
+              onClick={() => {
+                if (rewardClaimedRef.current) return;
+                rewardClaimedRef.current = true;
+                consumeCourtesyFreeExport();
+                setCourtesyAvailable(false);
+                setUnlocked(true);
+                onUnlockRef.current(unit.adUnitId, 'Courtesy Fast Export');
+              }}
+              className="px-2.5 py-1 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-zinc-200 font-semibold flex items-center gap-1 text-[11px]"
+            >
+              <Zap className="w-3 h-3 text-amber-300" />
+              <span>Skip Wait (1 Free)</span>
+            </button>
+          )}
+          {countdown === 0 && (
+            <button
+              type="button"
+              onClick={completeWithReward}
+              className="text-emerald-300 hover:text-emerald-200 font-semibold flex items-center gap-1"
+            >
+              {unlocked ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              Continue
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

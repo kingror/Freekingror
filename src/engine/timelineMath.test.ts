@@ -256,9 +256,14 @@ test('computeAutoDuckKeyframes generates smooth ducking dips under overlapping v
   assert.ok(beforeDuck.volume >= 95);
 });
 
-import { getPipPresetPatch } from './timelineMath';
+import {
+  applyTransitionBetweenClips,
+  detectBeatMarkerTimes,
+  findTimelineClipSeams,
+  getPipPresetPatch,
+} from './timelineMath';
 
-test('getPipPresetPatch positions PiP/split clips and splitClipAtTime preserves mask shape', () => {
+test('getPipPresetPatch positions PiP/split clips and splitClipAtTime preserves mask shape, feather, and motionPreset', () => {
   const pip = getPipPresetPatch('topRight');
   assert.equal(pip.mask, 'rounded');
   assert.ok((pip.transform.x ?? 0) > 0);
@@ -268,11 +273,58 @@ test('getPipPresetPatch positions PiP/split clips and splitClipAtTime preserves 
   const splitL = getPipPresetPatch('splitLeft');
   assert.equal(splitL.mask, 'splitLeft');
 
-  const maskedClip = makeClip({ mask: 'circle' });
+  const maskedClip = makeClip({
+    mask: 'circle',
+    feather: 45,
+    motionPreset: { preset: 'kenBurnsIn', intensity: 65, speed: 1.2 },
+  });
   const parts = splitClipAtTime(maskedClip, 5);
   assert.ok(parts !== null);
   assert.equal(parts[0].mask, 'circle');
   assert.equal(parts[1].mask, 'circle');
+  assert.equal(parts[0].feather, 45);
+  assert.equal(parts[1].feather, 45);
+  assert.equal(parts[0].motionPreset?.preset, 'kenBurnsIn');
+  assert.equal(parts[1].motionPreset?.preset, 'kenBurnsIn');
 });
+
+test('findTimelineClipSeams detects cut seams between adjacent visual clips and ignores audio/large gaps', () => {
+  const v1: TimelineTrack = { id: 'track_v1', type: 'video', role: 'main', label: 'V1', muted: false, locked: false, hidden: false };
+  const a1: TimelineTrack = { id: 'track_a1', type: 'audio', role: 'music', label: 'A1', muted: false, locked: false, hidden: false };
+
+  const c1 = makeClip({ id: 'c1', trackId: 'track_v1', startTime: 0, duration: 5 });
+  const c2 = makeClip({ id: 'c2', trackId: 'track_v1', startTime: 5, duration: 4 });
+  const c3 = makeClip({ id: 'c3', trackId: 'track_v1', startTime: 12, duration: 3 }); // 3s gap -> not a cut seam
+  const ac1 = makeClip({ id: 'ac1', kind: 'audio', trackId: 'track_a1', startTime: 0, duration: 4 });
+  const ac2 = makeClip({ id: 'ac2', kind: 'audio', trackId: 'track_a1', startTime: 4, duration: 4 });
+
+  const seams = findTimelineClipSeams([c1, c2, c3, ac1, ac2], [v1, a1]);
+  assert.equal(seams.length, 1);
+  assert.equal(seams[0].leftClipId, 'c1');
+  assert.equal(seams[0].rightClipId, 'c2');
+  assert.equal(seams[0].time, 5);
+});
+
+test('applyTransitionBetweenClips assigns transitionIn and snaps tiny gaps cleanly', () => {
+  const c1 = makeClip({ id: 'c1', trackId: 'track_v1', startTime: 0, duration: 5 });
+  const c2 = makeClip({ id: 'c2', trackId: 'track_v1', startTime: 5.2, duration: 4 });
+
+  const updated = applyTransitionBetweenClips([c1, c2], 'c2', 'pushLeft', 0.75, 'c1');
+  const nextC2 = updated.find((c) => c.id === 'c2')!;
+  assert.equal(nextC2.startTime, 5);
+  assert.equal(nextC2.transitionIn.type, 'pushLeft');
+  assert.equal(nextC2.transitionIn.duration, 0.75);
+});
+
+test('detectBeatMarkerTimes extracts spaced waveform transients within clip bounds', () => {
+  const waveform = [0.2, 0.9, 0.3, 0.2, 0.85, 0.25, 0.2, 0.95, 0.3, 0.2, 0.88, 0.2];
+  const beats = detectBeatMarkerTimes(waveform, 1.0, 10.0, 1.0, 8);
+  assert.ok(beats.length >= 2);
+  for (let i = 1; i < beats.length; i++) {
+    assert.ok(beats[i] - beats[i - 1] >= 1.0 - 1e-6);
+  }
+  assert.ok(beats.every((b) => b >= 1.0 && b < 11.0));
+});
+
 
 

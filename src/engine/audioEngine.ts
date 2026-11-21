@@ -1,5 +1,11 @@
 import type { MediaAsset, TimelineClip, TimelineTrack } from '../types/editor';
-import { clamp, computeAudioGainAtTime, evaluateAudioKeyframes } from './timelineMath';
+import { clamp } from './timelineMath';
+import {
+  computeEffectiveAudioPan,
+  computeEffectiveTrackAndClipGain,
+  isTrackAudible,
+  volumePctToLinearGain,
+} from './audioMixer';
 
 interface AudioNodeGraph {
   element: HTMLAudioElement;
@@ -166,7 +172,8 @@ export class StudioAudioEngine {
     clips: TimelineClip[],
     tracks: TimelineTrack[],
     assets: MediaAsset[],
-    globalPlaybackRate = 1
+    globalPlaybackRate = 1,
+    masterVolumePct = 100
   ): void {
     this.playingActive = isPlaying;
     if (!isPlaying) {
@@ -175,15 +182,21 @@ export class StudioAudioEngine {
     }
     const trackMap = new Map(tracks.map((t) => [t.id, t]));
     const assetMap = new Map(assets.map((a) => [a.id, a]));
-    const hasSoloAudio = tracks.some((t) => t.type === 'audio' && t.solo);
     const activeIds = new Set<string>();
     let anyLimiterActive = false;
+
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setTargetAtTime(
+        volumePctToLinearGain(masterVolumePct),
+        this.ctx.currentTime,
+        0.02
+      );
+    }
 
     for (const clip of clips) {
       if (clip.kind !== 'audio' && clip.kind !== 'video') continue;
       const track = trackMap.get(clip.trackId);
-      if (!track || track.muted || clip.audio.muted) continue;
-      if (hasSoloAudio && !track.solo) continue;
+      if (!track || clip.audio.muted || !isTrackAudible(track, tracks)) continue;
 
       const asset = assetMap.get(clip.assetId);
       if (!asset || !asset.src || (asset.kind !== 'audio' && asset.kind !== 'video')) continue;
@@ -200,13 +213,13 @@ export class StudioAudioEngine {
 
       const localTime = playhead - clip.startTime;
       const targetSrcTime = clip.sourceOffset + localTime * clip.speed;
-      const gainVal = computeAudioGainAtTime(clip, localTime);
-      const { pan } = evaluateAudioKeyframes(clip, localTime);
+      const gainVal = computeEffectiveTrackAndClipGain(clip, track, tracks, localTime, 100);
+      const panVal = computeEffectiveAudioPan(clip, track, localTime);
       const now = this.ctx.currentTime;
 
       graph.gain.gain.setTargetAtTime(gainVal, now, 0.02);
       if (graph.panner) {
-        graph.panner.pan.setTargetAtTime(clamp(pan / 100, -1, 1), now, 0.02);
+        graph.panner.pan.setTargetAtTime(panVal, now, 0.02);
       }
 
       const voiceIso = Boolean(clip.audio.voiceIsolation);

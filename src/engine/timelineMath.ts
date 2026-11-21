@@ -11,6 +11,8 @@ import type {
   SpeedRampPreset,
   TimelineClip,
   TimelineTrack,
+  TransitionConfig,
+  TransitionType,
   VfxConfig,
 } from '../types/editor';
 
@@ -48,6 +50,10 @@ export const DEFAULT_VFX: VfxConfig = {
   mirror: 0,
   duotone: 0,
   shake: 0,
+  filmBurn: 0,
+  prism: 0,
+  nightVision: 0,
+  motionBlur: 0,
 };
 
 export const DEFAULT_CHROMA_KEY: ChromaKeyConfig = {
@@ -268,6 +274,8 @@ export function splitClipAtTime(
     colorGrade: { ...clip.colorGrade },
     vfx: { ...clip.vfx },
     chromaKey: { ...clip.chromaKey },
+    ...(clip.motionPreset ? { motionPreset: { ...clip.motionPreset } } : {}),
+    ...(clip.neon ? { neon: { ...clip.neon } } : {}),
     transitionIn: { ...clip.transitionIn },
   };
 
@@ -285,6 +293,8 @@ export function splitClipAtTime(
     colorGrade: { ...clip.colorGrade },
     vfx: { ...clip.vfx },
     chromaKey: { ...clip.chromaKey },
+    ...(clip.motionPreset ? { motionPreset: { ...clip.motionPreset } } : {}),
+    ...(clip.neon ? { neon: { ...clip.neon } } : {}),
     transitionIn: { type: 'none', duration: 0.5 },
   };
 
@@ -296,7 +306,8 @@ export function isClipCompatibleWithTrack(
   track: TimelineTrack
 ): boolean {
   if (clip.kind === 'audio') return track.type === 'audio';
-  if (clip.kind === 'text') return track.type === 'text';
+  if (clip.kind === 'text') return track.type === 'text' || track.type === 'overlay';
+  if (clip.kind === 'emoji') return track.type === 'text' || track.type === 'overlay';
   return track.type === 'video' || track.type === 'overlay';
 }
 
@@ -652,3 +663,134 @@ export function getPipPresetPatch(preset: PipPresetId): {
       return { transform: { x: 0, y: 0, scale: 1, rotation: 0 }, mask: 'none' };
   }
 }
+
+export interface TimelineClipSeam {
+  id: string;
+  trackId: string;
+  time: number;
+  leftClipId: string;
+  rightClipId: string;
+  leftClipName: string;
+  rightClipName: string;
+  transition: TransitionConfig;
+}
+
+export function findTimelineClipSeams(
+  clips: TimelineClip[],
+  tracks: TimelineTrack[],
+  maxGapSeconds = 0.6
+): TimelineClipSeam[] {
+  const seams: TimelineClipSeam[] = [];
+  for (const track of tracks) {
+    if (track.type === 'audio') continue;
+    const laneClips = clips
+      .filter((c) => c.trackId === track.id)
+      .sort((a, b) => a.startTime - b.startTime);
+
+    for (let i = 0; i < laneClips.length - 1; i++) {
+      const left = laneClips[i];
+      const right = laneClips[i + 1];
+      const leftEnd = left.startTime + left.duration;
+      const gap = right.startTime - leftEnd;
+      const maxOverlap = Math.min(left.duration, right.duration) * 0.5;
+      if (gap >= -maxOverlap && gap <= maxGapSeconds) {
+        seams.push({
+          id: `${left.id}__${right.id}`,
+          trackId: track.id,
+          time: Number(right.startTime.toFixed(3)),
+          leftClipId: left.id,
+          rightClipId: right.id,
+          leftClipName: left.name,
+          rightClipName: right.name,
+          transition: { ...right.transitionIn },
+        });
+      }
+    }
+  }
+  return seams;
+}
+
+export function applyTransitionBetweenClips(
+  clips: TimelineClip[],
+  rightClipId: string,
+  type: TransitionType,
+  duration = 0.7,
+  leftClipId?: string | null
+): TimelineClip[] {
+  const right = clips.find((c) => c.id === rightClipId);
+  if (!right) return clips;
+  const left = leftClipId ? clips.find((c) => c.id === leftClipId) : undefined;
+  const maxAllowed = Math.max(0.2, right.duration * 0.9);
+  const clampedDur = Number(clamp(duration, 0.2, Math.min(2.5, maxAllowed)).toFixed(2));
+
+  let nextRightStart = right.startTime;
+  if (left && left.trackId === right.trackId) {
+    const leftEnd = left.startTime + left.duration;
+    const gap = right.startTime - leftEnd;
+    if (gap > 0.01 && gap <= 0.6) {
+      nextRightStart = Number(leftEnd.toFixed(3));
+    }
+  }
+
+  return clips.map((c) =>
+    c.id === rightClipId
+      ? {
+          ...c,
+          startTime: nextRightStart,
+          transitionIn: { type, duration: clampedDur },
+        }
+      : c
+  );
+}
+
+/**
+ * Analyzes an audio waveform peak array (0..1) and returns timeline timestamps
+ * for transient beats spaced at least `minSpacingSec` apart.
+ */
+export function detectBeatMarkerTimes(
+  waveform: number[] | undefined,
+  clipStartTime: number,
+  clipDuration: number,
+  minSpacingSec = 0.75,
+  maxMarkers = 16
+): number[] {
+  const safeDur = Math.max(0.5, clipDuration);
+  if (!waveform || waveform.length < 4) {
+    // Fallback rhythmic grid every 1.0s when waveform is unavailable
+    const times: number[] = [];
+    const step = Math.max(0.5, minSpacingSec);
+    for (let t = step; t < safeDur - 0.15 && times.length < maxMarkers; t += step) {
+      times.push(Number((clipStartTime + t).toFixed(2)));
+    }
+    return times;
+  }
+
+  const avg = waveform.reduce((acc, v) => acc + v, 0) / waveform.length;
+  const threshold = Math.max(0.35, avg * 1.18);
+  const beats: number[] = [];
+  let lastBeatTime = -minSpacingSec;
+
+  for (let i = 1; i < waveform.length - 1; i++) {
+    const prev = waveform[i - 1];
+    const curr = waveform[i];
+    const next = waveform[i + 1];
+    if (curr >= threshold && curr >= prev && curr >= next) {
+      const timeSec = clipStartTime + (i / (waveform.length - 1)) * safeDur;
+      if (timeSec - lastBeatTime >= minSpacingSec && timeSec < clipStartTime + safeDur - 0.1) {
+        beats.push(Number(timeSec.toFixed(2)));
+        lastBeatTime = timeSec;
+        if (beats.length >= maxMarkers) break;
+      }
+    }
+  }
+
+  if (beats.length === 0) {
+    const step = Math.max(0.8, minSpacingSec);
+    for (let t = step; t < safeDur - 0.15 && beats.length < maxMarkers; t += step) {
+      beats.push(Number((clipStartTime + t).toFixed(2)));
+    }
+  }
+  return beats;
+}
+
+

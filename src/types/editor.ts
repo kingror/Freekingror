@@ -13,21 +13,53 @@ export type TransitionType =
   | 'crossDissolve'
   | 'dipBlack'
   | 'dipWhite'
+  | 'pushLeft'
+  | 'pushRight'
+  | 'pushUp'
+  | 'pushDown'
   | 'slideLeft'
   | 'slideRight'
   | 'slideUp'
+  | 'slideDown'
+  | 'wipeLeft'
+  | 'wipeRight'
   | 'zoomIn'
   | 'zoomOut'
   | 'whipPan'
   | 'glitchCut'
   | 'radialWipe'
-  | 'spin';
+  | 'spin'
+  | 'lightLeak'
+  | 'filmBurn'
+  | 'shutterFlash'
+  | 'curtainOpen'
+  | 'curtainClose'
+  | 'blurZoom'
+  | 'prismRgb'
+  | 'diagonalWipe'
+  | 'beatStrobe'
+  | 'bounceIn'
+  | 'kaleidoscope';
 
 export type SpeedRampPreset = 'none' | 'ease' | 'hero' | 'bullet' | 'montage';
 
-export type TextAnimationType = 'none' | 'fade' | 'slideUp' | 'pop' | 'typewriter';
+export type TextAnimationType =
+  | 'none'
+  | 'fade'
+  | 'slideUp'
+  | 'pop'
+  | 'typewriter'
+  | 'bounce'
+  | 'glitch'
+  | 'zoomBlur';
 
-export type TextPresetType = 'title' | 'lowerThird' | 'subtitle' | 'kinetic';
+export type TextPresetType =
+  | 'title'
+  | 'lowerThird'
+  | 'subtitle'
+  | 'kinetic'
+  | 'glassCard'
+  | 'neonCyber';
 
 export interface MediaFormatInfo {
   container: string;
@@ -53,6 +85,11 @@ export interface MediaAsset {
   formatInfo: MediaFormatInfo;
   waveform?: number[];
   isSyntheticAudio?: boolean;
+  proxySrc?: string;
+  proxyWidth?: number;
+  proxyHeight?: number;
+  proxySizeBytes?: number;
+  proxyStatus?: 'none' | 'queued' | 'generating' | 'ready' | 'failed';
 }
 
 export interface ClipTransform {
@@ -108,6 +145,10 @@ export interface VfxConfig {
   mirror: number; // 0 to 100 (symmetrical kaleidoscope)
   duotone: number; // 0 to 100 (cyber gradient map)
   shake: number; // 0 to 100 (camera impact jitter)
+  filmBurn?: number; // 0 to 100 (warm optical edge flare)
+  prism?: number; // 0 to 100 (radial chromatic dispersion)
+  nightVision?: number; // 0 to 100 (phosphor scope look)
+  motionBlur?: number; // 0 to 100 (directional shutter-angle cinema blur)
 }
 
 export interface ChromaKeyConfig {
@@ -142,7 +183,16 @@ export interface AudioConfig {
 
 export type InsertPlacement = 'front' | 'back' | 'time';
 
-export type TextStyleType = 'clean' | 'outline' | 'neon' | 'cinema' | 'badge';
+export type TextStyleType =
+  | 'clean'
+  | 'outline'
+  | 'neon'
+  | 'cinema'
+  | 'badge'
+  | 'glass'
+  | 'gradient'
+  | 'retro3d'
+  | 'highlight';
 
 export interface TextOverlayConfig {
   text: string;
@@ -160,14 +210,65 @@ export interface TextOverlayConfig {
   letterSpacing?: number;
 }
 
+export type EmojiAnimationType = 'none' | 'bounce' | 'float' | 'pulse' | 'spin' | 'pop' | 'shake';
+
+export type EmojiStyleType = 'native' | 'sticker' | 'neon' | 'badge';
+
+export interface EmojiOverlayConfig {
+  emoji: string;
+  label: string;
+  size: number; // base canvas px at 1280px width (e.g. 96..220)
+  style: EmojiStyleType;
+  animation: EmojiAnimationType;
+  glowColor: string;
+  bgColor: string;
+}
+
 export type ClipMaskShape = 'none' | 'circle' | 'rounded' | 'splitLeft' | 'splitRight' | 'cinema';
+
+export type MotionPresetType =
+  | 'none'
+  | 'kenBurnsIn'
+  | 'kenBurnsOut'
+  | 'panLeft'
+  | 'panRight'
+  | 'handheldFloat'
+  | 'beatPulse'
+  | 'whipZoom'
+  | 'cinematicTilt';
+
+export interface MotionPresetConfig {
+  preset: MotionPresetType;
+  intensity: number; // 0 to 100
+  speed: number; // 0.5 to 2.5
+}
+
+export type NeonMode =
+  | 'edgeGlow'
+  | 'frameBorder'
+  | 'doubleTube'
+  | 'pulseAura'
+  | 'cyberGrid'
+  | 'cornerBrackets';
+
+export interface NeonConfig {
+  enabled: boolean;
+  mode: NeonMode;
+  color: string;
+  secondaryColor: string;
+  intensity: number; // 0 to 100
+  blurRadius: number; // 4 to 64 px
+  borderWidth: number; // 1 to 24 px
+  cornerRadius: number; // 0 to 64 px
+  pulseSpeed: number; // 0 to 5 Hz (0 = steady)
+}
 
 export interface TimelineClip {
   id: string;
   assetId: string;
   trackId: string;
   name: string;
-  kind: 'video' | 'image' | 'audio' | 'text';
+  kind: 'video' | 'image' | 'audio' | 'text' | 'emoji';
   startTime: number;
   duration: number;
   sourceOffset: number;
@@ -177,15 +278,19 @@ export interface TimelineClip {
   freezeFrame: boolean;
   blendMode: BlendMode;
   mask?: ClipMaskShape;
+  feather?: number; // 0 to 100 soft mask/edge feathering (%)
+  motionPreset?: MotionPresetConfig;
   transform: ClipTransform;
   keyframes: Keyframe[];
   audioKeyframes: AudioKeyframe[];
   colorGrade: ColorGrade;
   vfx: VfxConfig;
   chromaKey: ChromaKeyConfig;
+  neon?: NeonConfig;
   transitionIn: TransitionConfig;
   audio: AudioConfig;
   textConfig?: TextOverlayConfig;
+  emojiConfig?: EmojiOverlayConfig;
 }
 
 export interface SavedGalleryItem {
@@ -209,6 +314,8 @@ export interface TimelineTrack {
   locked: boolean;
   hidden: boolean;
   solo?: boolean;
+  volume?: number; // 0 to 200 (%), default 100
+  pan?: number; // -100 (Left) to +100 (Right), default 0
 }
 
 export interface TimelineMarker {
@@ -228,14 +335,16 @@ export interface ExportSettings {
   bitrateMbps: number;
 }
 
-export type InspectorTab =
-  | 'color'
+export type LeftVaultTab =
+  | 'media'
+  | 'luts'
+  | 'neon'
   | 'vfx'
+  | 'animate'
+  | 'transitions'
+  | 'titles'
+  | 'emoji'
+  | 'audio'
   | 'motion'
   | 'speed'
-  | 'chroma'
-  | 'transition'
-  | 'text'
-  | 'audio';
-
-export type LeftVaultTab = 'media' | 'luts' | 'vfx' | 'transitions' | 'titles' | 'audio';
+  | 'chroma';
